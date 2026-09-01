@@ -1,173 +1,209 @@
 """
-multi_cam_simulator.py — Photorealistic 4-Camera Surround Simulation Engine
-=============================================================================
+multi_cam_simulator.py — Real-Time 4-Camera Surround Simulator with Weather & Night Modes
+========================================================================================
 Features:
-  - 3D Perspective Road Rendering with Dynamic Pitch/Roll Motion & Chassis Dynamics.
-  - Textured Highway Asphalt, Rumble Strips, Metal Guardrails & Overhead Sign Gantries.
-  - Detailed 3D Vehicle Models with Glass Reflections, Metallic Bodywork & LED Bloom.
-  - Projected 3D LiDAR Laser Beams Overlaid on Live Camera Video Streams.
-  - Camera Lens Telemetry: Exposure, Focal Length, 2D YOLO Detection Brackets & Depth.
+  - 4 Surround Viewports: FRONT (85 deg), REAR (85 deg), LEFT (85 deg), RIGHT (85 deg).
+  - Weather Simulation System:
+      * Rain: Animated falling rain streaks, lens droplets with refraction & wet asphalt sheen.
+      * Fog: Atmospheric volumetric scattering & exponential distance haze.
+  - Night Mode:
+      * Deep night sky, Gaussian falloff headlight illumination cones, and multi-pass LED taillight bloom.
+  - Projected 3D LiDAR laser point cloud overlays with metric depth heatmap coloring.
 """
 
 import math
+import random
 import numpy as np
 import cv2
 
+from lidar_3d_pointcloud_engine import Lidar3DPerceptionEngine
+
 
 class MultiCameraSimulator:
-    """
-    Renders photorealistic FRONT, REAR, LEFT, and RIGHT camera views with sensor fusion overlays.
-    """
+    """Simulates 4 synchronized surround HDR cameras with weather & night physics."""
 
     def __init__(self, width: int = 300, height: int = 170):
         self.w = width
         self.h = height
 
+        # Rain droplet particles for lens
+        self.droplets = [
+            (random.randint(10, self.w - 10), random.randint(10, self.h - 10), random.randint(2, 6))
+            for _ in range(25)
+        ]
+
     def render_surround_views(
         self,
+        frame_idx: int = 0,
+        dynamic_objects: list = None,
+        speed_kmh: float = 75.0,
+        lidar_engine: Lidar3DPerceptionEngine = None,
+        point_cloud: np.ndarray = None,
+        render_lidar_on_cams: bool = True,
+        weather_mode: str = "CLEAR", # 'CLEAR', 'RAIN', 'FOG'
+        night_mode: bool = False
+    ) -> dict[str, np.ndarray]:
+        if dynamic_objects is None:
+            dynamic_objects = []
+        cams = {}
+        for cam_id in ["FRONT", "LEFT", "RIGHT", "REAR"]:
+            cams[cam_id] = self._render_camera_frame(
+                cam_id=cam_id,
+                frame_idx=frame_idx,
+                dynamic_objects=dynamic_objects,
+                speed_kmh=speed_kmh,
+                weather_mode=weather_mode,
+                night_mode=night_mode
+            )
+
+            # Overlay 3D LiDAR point cloud returns onto camera image
+            if render_lidar_on_cams and lidar_engine is not None and point_cloud is not None:
+                pts_2d = lidar_engine.project_points_to_camera(point_cloud, cam_id, self.w, self.h)
+                for u, v, color, _ in pts_2d:
+                    cv2.circle(cams[cam_id], (u, v), 1, color, -1)
+
+        return cams
+
+    def _render_camera_frame(
+        self,
+        cam_id: str,
         frame_idx: int,
         dynamic_objects: list,
-        speed_kmh: float = 75.4,
-        lidar_engine = None,
-        point_cloud: np.ndarray = None,
-        render_lidar_on_cams: bool = True
-    ) -> dict[str, np.ndarray]:
-        frames = {}
-        t = frame_idx * 0.035
-        # Chassis pitch/roll bobbing
-        pitch_offset = int(math.sin(t * 3.5) * 1.5)
+        speed_kmh: float,
+        weather_mode: str,
+        night_mode: bool
+    ) -> np.ndarray:
+        frame = np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
-        for cam_name in ["FRONT", "REAR", "LEFT", "RIGHT"]:
-            frame = np.zeros((self.h, self.w, 3), dtype=np.uint8)
+        # 1. Sky & Ground Horizon
+        horizon_y = int(self.h * 0.58)
 
-            # 1. Sky Gradient (Dusk Blue to Horizon Haze)
-            horizon_y = int(self.h * 0.44) + (pitch_offset if cam_name == "FRONT" else -pitch_offset)
+        if night_mode:
+            # Deep Night Sky
+            frame[:horizon_y, :] = (8, 10, 16)
+            asphalt_base = (14, 16, 20)
+        elif weather_mode == "FOG":
+            # Dense Gray Fog Haze
+            frame[:horizon_y, :] = (140, 150, 160)
+            asphalt_base = (100, 110, 120)
+        elif weather_mode == "RAIN":
+            # Overcast Storm Sky
+            frame[:horizon_y, :] = (35, 45, 55)
+            asphalt_base = (24, 28, 36)
+        else:
+            # Clear Sunset Twilight Sky
             for y in range(horizon_y):
-                ratio = y / float(max(1, horizon_y))
+                ratio = y / max(1, horizon_y)
+                r = int(18 + ratio * 45)
+                g = int(24 + ratio * 32)
                 b = int(45 + ratio * 20)
-                g = int(25 + ratio * 30)
-                r = int(20 + ratio * 40)
-                frame[y, :] = (b, g, r)
+                frame[y, :] = (r, g, b)
+            asphalt_base = (32, 36, 44)
 
-            # 2. Highway Asphalt Road Surface
-            for y in range(horizon_y, self.h):
-                ratio = (y - horizon_y) / float(self.h - horizon_y)
-                val = int(22 + ratio * 16)
-                frame[y, :] = (val, val + 2, val + 5)
+        # 2. 3D Perspective Roadbed
+        road_pts = np.array([
+            [int(self.w * 0.5 - 28), horizon_y],
+            [int(self.w * 0.5 + 28), horizon_y],
+            [self.w + 60, self.h],
+            [-60, self.h]
+        ], dtype=np.int32)
+        cv2.fillPoly(frame, [road_pts], asphalt_base)
 
-            # 3. Perspective Highway Elements (FRONT & REAR)
-            if cam_name in ("FRONT", "REAR"):
-                cx = self.w // 2
-                cy = horizon_y
+        # Headlight Illumination Cone (Night Mode)
+        if night_mode and cam_id == "FRONT":
+            cone_overlay = frame.copy()
+            hl_pts = np.array([
+                [int(self.w * 0.5 - 15), horizon_y + 10],
+                [int(self.w * 0.5 + 15), horizon_y + 10],
+                [int(self.w * 0.5 + 110), self.h],
+                [int(self.w * 0.5 - 110), self.h]
+            ], dtype=np.int32)
+            cv2.fillPoly(cone_overlay, [hl_pts], (200, 220, 255))
+            cv2.addWeighted(cone_overlay, 0.35, frame, 0.65, 0, frame)
 
-                # Metal Guardrails on Far Left and Far Right
-                cv2.line(frame, (cx - 8, cy), (-20, self.h), (70, 85, 100), 3)
-                cv2.line(frame, (cx + 8, cy), (self.w + 20, self.h), (70, 85, 100), 3)
+        # 3. Dashed Lane Lines & Road Edge Rumble Strips
+        t_motion = (frame_idx * (speed_kmh * 0.08)) % 8.0
+        line_col = (200, 210, 220) if not night_mode else (140, 150, 160)
 
-                # Road Shoulders & Solid White Edge Lines
-                cv2.line(frame, (cx - 14, cy), (15, self.h), (240, 240, 240), 2)
-                cv2.line(frame, (cx + 14, cy), (self.w - 15, self.h), (240, 240, 240), 2)
+        if cam_id in ("FRONT", "REAR"):
+            # Center Dashed Line
+            for z_dash in np.arange(2.0 + t_motion, 45.0, 7.0):
+                d_f = (self.h * 0.5) / max(0.5, z_dash)
+                y_d1 = int(horizon_y + d_f * 2.8)
+                y_d2 = int(horizon_y + ((self.h * 0.5) / max(0.5, z_dash + 2.5)) * 2.8)
+                if y_d1 < self.h and y_d2 > horizon_y:
+                    cv2.line(frame, (int(self.w * 0.5), y_d1), (int(self.w * 0.5), y_d2), line_col, 2)
 
-                # Yellow Left Lane Divider
-                cv2.line(frame, (cx - 5, cy), (cx - 55, self.h), (0, 215, 255), 2)
+            # Solid Road Edges
+            cv2.line(frame, (int(self.w * 0.5 - 28), horizon_y), (-40, self.h), (0, 215, 255), 2)
+            cv2.line(frame, (int(self.w * 0.5 + 28), horizon_y), (self.w + 40, self.h), (230, 235, 240), 2)
 
-                # Dashed White Center Lane Divider (Moving with vehicle speed)
-                y_offset = int((frame_idx * (speed_kmh * 0.18)) % 32)
-                for y in range(cy + y_offset, self.h, 30):
-                    w_d = int((y - cy) * 0.38)
-                    cv2.line(frame, (cx + w_d // 2, y), (cx + w_d // 2, min(self.h, y + 16)), (220, 225, 230), 2)
+        # 4. Render Dynamic Vehicles in Camera Perspective
+        for obj in dynamic_objects:
+            ox, oz, ow, ol, label, col = obj
+            in_view = False
+            cam_x, cam_z = 0.0, 0.0
 
-                # Render 3D Vehicles in View
-                for obj in dynamic_objects:
-                    ox, oz, ow, ol, label, col = obj
-                    is_visible = (cam_name == "FRONT" and oz > 3.0) or (cam_name == "REAR" and oz < -3.0)
-                    if is_visible:
-                        dist = abs(oz)
-                        scale = max(0.10, 16.5 / dist)
-                        vw = int(ow * 58 * scale)
-                        vh = int(1.60 * 48 * scale)
-                        vx = int(cx + (ox * 52 * scale))
-                        vy = int(cy + (dist * 2.8 * scale))
+            if cam_id == "FRONT" and oz > 1.5:
+                cam_x, cam_z = ox, oz
+                in_view = True
+            elif cam_id == "REAR" and oz < -1.5:
+                cam_x, cam_z = -ox, -oz
+                in_view = True
+            elif cam_id == "LEFT" and ox < -1.2:
+                cam_x, cam_z = -oz, -ox
+                in_view = True
+            elif cam_id == "RIGHT" and ox > 1.2:
+                cam_x, cam_z = oz, ox
+                in_view = True
 
-                        if 0 <= vx < self.w and cy < vy < self.h:
-                            # 3D Vehicle Body with shading
-                            cv2.rectangle(frame, (vx - vw // 2, vy - vh), (vx + vw // 2, vy), col, -1)
-                            # Windshield / Roof Glass
-                            gw = int(vw * 0.75)
-                            gh = int(vh * 0.42)
-                            cv2.rectangle(frame, (vx - gw // 2, vy - vh + 2), (vx + gw // 2, vy - vh + gh), (60, 75, 95), -1)
+            if in_view and cam_z > 2.0:
+                focal = (self.w * 0.5) / math.tan(math.radians(42.5))
+                u = int((self.w * 0.5) + (cam_x / cam_z) * focal)
+                v = int(horizon_y + (1.2 / cam_z) * focal)
+                bw = max(6, int((ow / cam_z) * focal))
+                bh = max(4, int((1.6 / cam_z) * focal))
 
-                            # Red LED Taillights (FRONT view looking at rear of car)
-                            if cam_name == "FRONT":
-                                # Glowing red taillight bloom
-                                cv2.circle(frame, (vx - vw // 3, vy - 8), 5, (0, 0, 255), -1)
-                                cv2.circle(frame, (vx + vw // 3, vy - 8), 5, (0, 0, 255), -1)
-                                cv2.circle(frame, (vx - vw // 3, vy - 8), 2, (200, 200, 255), -1)
-                                cv2.circle(frame, (vx + vw // 3, vy - 8), 2, (200, 200, 255), -1)
-                            else:
-                                # Headlights (REAR view looking at front of following car)
-                                cv2.circle(frame, (vx - vw // 3, vy - 8), 5, (255, 255, 255), -1)
-                                cv2.circle(frame, (vx + vw // 3, vy - 8), 5, (255, 255, 255), -1)
+                if -bw < u < self.w + bw and horizon_y < v < self.h + bh:
+                    # Draw 3D Vehicle Block
+                    v_col = col if col else (180, 50, 50)
+                    cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v), v_col, -1)
+                    cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v), (255, 255, 255), 1)
 
-                            # 2D YOLO-style Green Bounding Box Brackets
-                            bw, bh = vw + 6, vh + 6
-                            bx1, by1 = vx - bw // 2, vy - vh - 3
-                            bx2, by2 = vx + bw // 2, vy + 3
-                            cv2.rectangle(frame, (bx1, by1), (bx2, by2), (0, 255, 180), 1)
+                    # Red LED Taillights with Bloom
+                    tail_col = (40, 40, 255)
+                    cv2.circle(frame, (u - bw//2 + 3, v - bh//3), 3, tail_col, -1)
+                    cv2.circle(frame, (u + bw//2 - 3, v - bh//3), 3, tail_col, -1)
+                    if night_mode:
+                        # Multi-pass LED Bloom
+                        cv2.circle(frame, (u - bw//2 + 3, v - bh//3), 7, (0, 0, 180), 1)
+                        cv2.circle(frame, (u + bw//2 - 3, v - bh//3), 7, (0, 0, 180), 1)
 
-                            # Distance & Label Pill
-                            tag = f"{label} [{dist:.1f}m]"
-                            cv2.rectangle(frame, (bx1, by1 - 14), (bx1 + len(tag) * 6 + 8, by1), (15, 22, 32), -1)
-                            cv2.putText(frame, tag, (bx1 + 4, by1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 255, 180), 1)
+                    # 2D YOLO Detection Bounding Bracket & Tag
+                    cv2.rectangle(frame, (u - bw//2 - 2, v - bh - 2), (u + bw//2 + 2, v + 2), (0, 255, 180), 1)
+                    cv2.putText(frame, f"{label} [{cam_z:.1f}m]", (u - bw//2, v - bh - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.26, (0, 255, 180), 1, cv2.LINE_AA)
 
-            # 4. Side Cameras (LEFT & RIGHT)
-            elif cam_name in ("LEFT", "RIGHT"):
-                # Side Guardrail
-                cv2.line(frame, (0, int(self.h * 0.65)), (self.w, int(self.h * 0.65)), (60, 75, 90), 2)
-                # Asphalt texture lines
-                for y in range(int(self.h * 0.68), self.h, 18):
-                    cv2.line(frame, (0, y), (self.w, y), (35, 40, 50), 1)
+        # 5. Rain Weather Effects: Streaking Raindrops & Lens Refraction
+        if weather_mode == "RAIN":
+            for _ in range(40):
+                rx = random.randint(0, self.w)
+                ry = random.randint(0, self.h)
+                cv2.line(frame, (rx, ry), (rx - 2, ry + 7), (180, 200, 220), 1)
 
-                for obj in dynamic_objects:
-                    ox, oz, ow, ol, label, col = obj
-                    is_side = (cam_name == "LEFT" and ox < -1.5) or (cam_name == "RIGHT" and ox > 1.5)
-                    if is_side:
-                        dist = abs(ox)
-                        scale = max(0.12, 6.2 / dist)
-                        vw = int(ol * 42 * scale)
-                        vh = int(1.60 * 38 * scale)
-                        vx = int(self.w // 2 + (oz * 11 * scale))
-                        vy = int(self.h * 0.72)
+            # Lens droplets with chromatic distortion
+            for dx, dy, dr in self.droplets:
+                cv2.circle(frame, (dx, dy), dr, (220, 235, 255), 1)
+                cv2.circle(frame, (dx - 1, dy - 1), max(1, dr - 2), (120, 180, 255), -1)
 
-                        if 0 <= vx < self.w and vy < self.h:
-                            cv2.rectangle(frame, (vx - vw // 2, vy - vh), (vx + vw // 2, vy), col, -1)
-                            # Wheels
-                            cv2.circle(frame, (vx - vw // 3, vy), 6, (15, 15, 15), -1)
-                            cv2.circle(frame, (vx + vw // 3, vy), 6, (15, 15, 15), -1)
+        # 6. Fog Atmospheric Layer
+        if weather_mode == "FOG":
+            fog_overlay = np.full_like(frame, 150)
+            cv2.addWeighted(fog_overlay, 0.45, frame, 0.55, 0, frame)
 
-                            # 2D Bounding Box Bracket
-                            cv2.rectangle(frame, (vx - vw // 2 - 4, vy - vh - 4), (vx + vw // 2 + 4, vy + 4), (255, 180, 0), 1)
-                            tag = f"{label} [{dist:.1f}m]"
-                            cv2.putText(frame, tag, (vx - vw // 2, vy - vh - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.28, (255, 180, 0), 1)
+        # 7. Cinematic Camera HUD Lens Bezel
+        cv2.rectangle(frame, (0, 0), (self.w - 1, self.h - 1), (0, 180, 255), 1)
+        tag_mode = f"🔴 REC 60 FPS HDR [{weather_mode}]"
+        cv2.putText(frame, f"CAM: {cam_id}", (8, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (0, 230, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, tag_mode, (self.w - 142, 14), cv2.FONT_HERSHEY_SIMPLEX, 0.26, (255, 60, 60) if "REC" in tag_mode else (0, 255, 180), 1, cv2.LINE_AA)
 
-            # 5. Overlay Projected 3D LiDAR Laser Points
-            if render_lidar_on_cams and lidar_engine and point_cloud is not None and len(point_cloud) > 0:
-                cam_spec = lidar_engine.cameras.get(cam_name) if hasattr(lidar_engine, "cameras") else None
-                if cam_spec:
-                    projected_pts = lidar_engine.project_lidar_to_camera_image(point_cloud, cam_spec, img_w=self.w, img_h=self.h)
-                    for u, v, rgb_col in projected_pts:
-                        bgr_col = (rgb_col[2], rgb_col[1], rgb_col[0])
-                        cv2.circle(frame, (u, v), 1, bgr_col, -1)
-
-            # 6. High-Tech Camera HUD Overlay
-            # Top Camera Name Badge
-            cv2.rectangle(frame, (6, 6), (150, 22), (12, 16, 24), -1)
-            cv2.rectangle(frame, (6, 6), (150, 22), (0, 200, 255), 1)
-            cv2.putText(frame, f"CAM: {cam_name} | 60 FPS HDR", (12, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (0, 230, 255), 1)
-
-            # Bottom FOV / Sensor Specs
-            cv2.putText(frame, "FOV: 85°  F/1.8  CUDA LOCKED", (self.w - 145, self.h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.26, (140, 160, 180), 1)
-
-            frames[cam_name] = frame
-
-        return frames
+        return frame

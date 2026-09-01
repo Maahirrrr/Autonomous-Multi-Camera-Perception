@@ -1,162 +1,172 @@
 """
-lidar_3d_pointcloud_engine.py — Level 4 360° 3D LiDAR Physics & Camera Fusion Stack
-===================================================================================
-Physics & Mathematics:
-  - 64-Beam Dual-Return Hesai/Velodyne LiDAR Elevation Trigonometry:
-      z_world = d * cos(phi) * cos(theta), x_world = d * cos(phi) * sin(theta), y_world = d * sin(phi) + h_lidar
-  - Physical Laser Reflectivity Model (Lambertian surface + material albedo):
-      I = I_0 * (rho * cos(alpha)) / max(1.0, d^2)
-  - Ground Plane RANSAC Surface Separation.
-  - 3D Oriented Bounding Box (OBB) 8-Corner Wireframe Geometry.
-  - Pinhole Camera-LiDAR Extrinsic Projection Matrix: P_cam = K * [R | T] * P_lidar
+lidar_3d_pointcloud_engine.py — 64-Beam LiDAR Physics, Fog Attenuation & 77GHz mmWave Radar
+=========================================================================================
+Physics & Sensor Simulation:
+  - 64-Beam LiDAR Scanner with Non-Linear Elevation Trigonometry.
+  - Atmospheric Weather Attenuation & Beer-Lambert Scattering:
+      Fog Mode: Max range drops 65m -> 25m, intensity I(d) = I_0 * exp(-gamma_fog * d)
+      Rain Mode: Ground spray clutter & droplet backscatter.
+  - 77GHz mmWave FMCW Radar Simulation:
+      120 deg Azimuth FOV, Range-Doppler Radial Velocity (Delta v_r), Target RCS & SNR.
+  - Camera-to-LiDAR Point-to-Pixel Extrinsics (P_cam = K * [R | T] * P_lidar).
 """
 
 import math
+import random
 import numpy as np
+import cv2
 
 
 class BoundingBox3D:
-    """Represents a 3D Oriented Bounding Box with 8 metric world corners."""
-    def __init__(self, cx: float, cy: float, cz: float, dx: float, dy: float, dz: float, yaw_rad: float = 0.0, label: str = "CAR", speed_kmh: float = 75.0):
+    def __init__(self, cx: float, cy: float, cz: float, dx: float, dy: float, dz: float, label: str = "VEHICLE"):
         self.cx = cx
         self.cy = cy
         self.cz = cz
         self.dx = dx
         self.dy = dy
         self.dz = dz
-        self.yaw = yaw_rad
         self.label = label
-        self.speed_kmh = speed_kmh
 
-        # Relative kinematics
-        self.vx = 0.0
-        self.vz = 0.0
-        self.ttc_s = max(0.8, abs(cz) / max(0.5, (speed_kmh / 3.6)))
 
-    def get_8_corners(self) -> np.ndarray:
-        """Returns the 8 3D world corners of the bounding box."""
-        hx, hy, hz = self.dx * 0.5, self.dy * 0.5, self.dz * 0.5
-        c_yaw, s_yaw = math.cos(self.yaw), math.sin(self.yaw)
+class RadarDetection:
+    """Represents a target return from 77GHz mmWave FMCW Radar."""
+    def __init__(self, target_id: str, range_m: float, azimuth_deg: float, doppler_mps: float, rcs_db: float):
+        self.id = target_id
+        self.range_m = range_m
+        self.azimuth_deg = azimuth_deg
+        self.doppler_mps = doppler_mps # Radial velocity relative to ego (+ approaching, - receding)
+        self.rcs_db = rcs_db # Radar Cross Section (dBm^2)
+        self.x = range_m * math.sin(math.radians(azimuth_deg))
+        self.z = range_m * math.cos(math.radians(azimuth_deg))
 
-        local_corners = np.array([
-            [-hx, -hy, -hz],
-            [+hx, -hy, -hz],
-            [+hx, -hy, +hz],
-            [-hx, -hy, +hz],
-            [-hx, +hy, -hz],
-            [+hx, +hy, -hz],
-            [+hx, +hy, +hz],
-            [-hx, +hy, +hz],
-        ])
 
-        # Rotate around Y axis and translate
-        R_y = np.array([
-            [c_yaw, 0, s_yaw],
-            [0, 1, 0],
-            [-s_yaw, 0, c_yaw]
-        ])
+class Radar77GHzSimulator:
+    """Simulates a forward-facing 77GHz mmWave automotive radar."""
+    def __init__(self, fov_deg: float = 120.0, max_range_m: float = 85.0):
+        self.fov_deg = fov_deg
+        self.max_range_m = max_range_m
 
-        world_corners = (R_y @ local_corners.T).T + np.array([self.cx, self.cy, self.cz])
-        return world_corners
+    def scan_targets(self, dynamic_objects: list, ego_speed_mps: float) -> list[RadarDetection]:
+        detections = []
+        for obj in dynamic_objects:
+            ox, oz, ow, ol, label, col = obj
+            rng = math.sqrt(ox**2 + oz**2)
+            if 1.0 <= rng <= self.max_range_m:
+                az_deg = math.degrees(math.atan2(ox, max(0.1, oz)))
+                if abs(az_deg) <= (self.fov_deg * 0.5):
+                    # Relative Doppler velocity approximation
+                    v_target_mps = 20.0 if "TRUCK" in label else (28.0 if "SPORTS" in label else 22.0)
+                    v_rel = v_target_mps - ego_speed_mps
+                    doppler = v_rel * math.cos(math.radians(az_deg))
+
+                    rcs = 15.0 if "TRUCK" in label else (10.0 if "CAR" in label or "SEDAN" in label else 8.0)
+                    detections.append(RadarDetection(
+                        target_id=label,
+                        range_m=rng,
+                        azimuth_deg=az_deg,
+                        doppler_mps=doppler,
+                        rcs_db=rcs
+                    ))
+        return detections
 
 
 class Lidar3DPerceptionEngine:
     """
-    Simulates physical 64-beam 3D LiDAR point clouds and performs multi-modal camera projections.
+    Physical 64-Beam LiDAR scanner with atmospheric weather scattering and camera projection.
     """
 
     def __init__(self, num_lasers: int = 64, max_range_m: float = 65.0):
         self.num_lasers = num_lasers
-        self.max_range = max_range_m
+        self.max_range_m = max_range_m
+        self.horizontal_res_deg = 0.40 # ~900 firings per 360 rotation
+        self.weather_mode = "CLEAR" # 'CLEAR', 'RAIN', 'FOG'
 
-        # Realistic non-linear beam distribution (dense near horizon, sparse at extremes)
-        # Channels: -25 deg to +15 deg
-        angles_lower = np.linspace(-25.0, -5.0, 24)
-        angles_horizon = np.linspace(-5.0, 5.0, 28)
-        angles_upper = np.linspace(5.0, 15.0, 12)
-        self.elevation_angles_deg = np.concatenate([angles_lower, angles_horizon, angles_upper])
+        # 64-beam non-linear elevation distribution [-25 deg, +15 deg]
+        el_dense = np.linspace(-8.0, 2.0, 32)
+        el_lower = np.linspace(-25.0, -8.5, 18)
+        el_upper = np.linspace(2.5, 15.0, 14)
+        self.elevation_angles_deg = np.concatenate([el_lower, el_dense, el_upper])
 
-        # LiDAR Sensor Mount Position on Roof Center (X=0, Y=1.95m, Z=0.6m)
-        self.lidar_pos = np.array([0.0, 1.95, 0.6], dtype=np.float64)
+        self.radar_sim = Radar77GHzSimulator(fov_deg=120.0, max_range_m=85.0)
+        self.cameras = {}
 
-    def generate_scene_point_cloud(self, dynamic_objects: list, road_geometry: dict, frame_idx: int) -> np.ndarray:
-        """
-        Generates physical 3D point cloud array [N, 5] (x, y, z, intensity, range).
-        """
+    def set_weather_mode(self, mode: str):
+        self.weather_mode = mode.upper()
+
+    def generate_scene_point_cloud(
+        self,
+        dynamic_objects: list,
+        road_geometry: dict = None,
+        frame_idx: int = 0
+    ) -> np.ndarray:
         points = []
 
-        # 1. Ground Plane Rings (Pavement Reflectivity)
-        for ring_idx, el_deg in enumerate(self.elevation_angles_deg):
-            el_rad = math.radians(el_deg)
-            if el_rad >= -0.01:
-                continue
+        # Effective max range based on weather
+        if self.weather_mode == "FOG":
+            effective_range = 26.0 # Severe fog attenuation
+            gamma_fog = 0.08
+        elif self.weather_mode == "RAIN":
+            effective_range = 48.0
+            gamma_fog = 0.02
+        else:
+            effective_range = self.max_range_m
+            gamma_fog = 0.005
 
-            # Distance to ground plane (y = 0)
-            ground_dist = -self.lidar_pos[1] / math.sin(el_rad)
-            if ground_dist > self.max_range or ground_dist < 1.0:
-                continue
+        azimuths = np.linspace(0.0, 360.0, int(360.0 / self.horizontal_res_deg), endpoint=False)
 
-            # 360 degree azimuthal sweep
-            for az_deg in np.linspace(0.0, 360.0, 260, endpoint=False):
-                az_rad = math.radians(az_deg)
+        # 1. Road Ground Plane Returns
+        h_lidar = 1.65 # Sensor mount height above ground
+        for el_deg in self.elevation_angles_deg:
+            if el_deg < -0.8: # Pointing towards ground
+                el_rad = math.radians(el_deg)
+                # Distance to flat ground y = 0
+                r_ground = -h_lidar / math.sin(el_rad)
 
-                x = ground_dist * math.sin(az_rad)
-                z = ground_dist * math.cos(az_rad)
-                y = 0.0 + np.random.normal(0, 0.012) # Road roughness noise
+                if 1.5 < r_ground < effective_range:
+                    for az_deg in azimuths[::3]: # Subsample for 60 FPS real-time
+                        az_rad = math.radians(az_deg)
+                        px = r_ground * math.cos(el_rad) * math.sin(az_rad)
+                        pz = r_ground * math.cos(el_rad) * math.cos(az_rad)
+                        py = 0.02
 
-                if abs(x) > 13.0 or z < -22.0 or z > 55.0:
-                    continue
+                        # Asphalt vs Road Marking Reflectivity
+                        is_lane_marker = (abs(px - (-1.875)) < 0.12 or abs(px - 1.875) < 0.12 or abs(px - (-5.8)) < 0.15 or abs(px - 5.8) < 0.15)
+                        rho = 0.92 if is_lane_marker else 0.28
 
-                # Material Reflectivity (Asphalt ~0.20, Painted White/Yellow Lane Line ~0.90)
-                is_lane = (abs(x + 3.75) < 0.22 or abs(x - 3.75) < 0.22 or abs(x) < 0.18)
-                albedo = 0.92 if is_lane else 0.25
-                intensity = albedo * (1.0 - (ground_dist / self.max_range) * 0.4)
+                        # Lambertian intensity with fog absorption
+                        intensity = (rho / max(1.0, (r_ground * 0.1)**2)) * math.exp(-gamma_fog * r_ground)
+                        intensity = min(1.0, max(0.05, intensity))
+                        points.append([px, py, pz, intensity, r_ground])
 
-                points.append([x, y, z, intensity, ground_dist])
-
-        # 2. Dynamic Vehicles (Dense surface point returns)
+        # 2. Dynamic Obstacles Point Cloud
         for obj in dynamic_objects:
             ox, oz, ow, ol, label, col = obj
-            oh = 1.60 # Vehicle height
-            oy = oh * 0.5
+            oh = 1.60
+            dist_to_obj = math.sqrt(ox**2 + oz**2)
 
-            dist_to_obj = math.sqrt(ox ** 2 + oz ** 2)
-            n_pts = max(35, int(450 / max(1.0, dist_to_obj * 0.4)))
+            if dist_to_obj <= effective_range:
+                # Sample surface points across 3D box
+                num_pts = max(6, int(35 - (dist_to_obj / effective_range) * 22))
+                for _ in range(num_pts):
+                    px = ox + random.uniform(-ow * 0.48, ow * 0.48)
+                    pz = oz + random.uniform(-ol * 0.48, ol * 0.48)
+                    py = random.uniform(0.35, oh)
+                    rng = math.sqrt(px**2 + pz**2)
+                    intensity = 0.90 * math.exp(-gamma_fog * rng)
+                    points.append([px, py, pz, intensity, rng])
 
-            for _ in range(n_pts):
-                side = np.random.choice(["front", "rear", "left", "right", "top"])
-                if side == "front":
-                    px = ox + np.random.uniform(-ow * 0.48, ow * 0.48)
-                    py = np.random.uniform(0.15, oh)
-                    pz = oz + ol * 0.5
-                elif side == "rear":
-                    px = ox + np.random.uniform(-ow * 0.48, ow * 0.48)
-                    py = np.random.uniform(0.15, oh)
-                    pz = oz - ol * 0.5
-                elif side == "left":
-                    px = ox - ow * 0.5
-                    py = np.random.uniform(0.15, oh)
-                    pz = oz + np.random.uniform(-ol * 0.48, ol * 0.48)
-                elif side == "right":
-                    px = ox + ow * 0.5
-                    py = np.random.uniform(0.15, oh)
-                    pz = oz + np.random.uniform(-ol * 0.48, ol * 0.48)
-                else:
-                    px = ox + np.random.uniform(-ow * 0.48, ow * 0.48)
-                    py = oh
-                    pz = oz + np.random.uniform(-ol * 0.48, ol * 0.48)
-
-                r_dist = math.sqrt(px ** 2 + py ** 2 + pz ** 2)
-                intensity = 0.88 + np.random.uniform(0.0, 0.12) # Metallic bodywork reflectivity
-                points.append([px, py, pz, intensity, r_dist])
-
-        if not points:
-            return np.zeros((0, 5), dtype=np.float32)
+        # 3. Rain / Fog Atmospheric Noise Particles
+        if self.weather_mode in ("RAIN", "FOG"):
+            noise_cnt = 80 if self.weather_mode == "RAIN" else 150
+            for _ in range(noise_cnt):
+                rx = random.uniform(-14.0, 14.0)
+                rz = random.uniform(2.0, effective_range)
+                ry = random.uniform(0.1, 3.5)
+                points.append([rx, ry, rz, random.uniform(0.05, 0.25), math.sqrt(rx**2 + rz**2)])
 
         return np.array(points, dtype=np.float32)
 
     def segment_ground_and_clusters(self, point_cloud: np.ndarray, dynamic_objects: list = None) -> tuple[np.ndarray, np.ndarray, list[BoundingBox3D]]:
-        """Separates ground and extracts 3D bounding boxes."""
         if len(point_cloud) == 0:
             return np.zeros((0, 5)), np.zeros((0, 5)), []
 
@@ -173,81 +183,91 @@ class Lidar3DPerceptionEngine:
                 bbox = BoundingBox3D(cx=ox, cy=oh * 0.5, cz=oz, dx=ow, dy=oh, dz=ol, label=label)
                 bounding_boxes.append(bbox)
         else:
-            # Fit default cluster if obstacle points present
             if len(obstacle_points) > 5:
                 bbox = BoundingBox3D(cx=0.0, cy=0.8, cz=20.0, dx=1.85, dy=1.6, dz=4.7, label="LEAD CAR")
                 bounding_boxes.append(bbox)
 
         return ground_points, obstacle_points, bounding_boxes
 
-    def project_lidar_to_camera_image(
+    def project_points_to_camera(
         self,
         point_cloud: np.ndarray,
-        cam_spec,
-        img_w: int = 300,
-        img_h: int = 170
-    ) -> list[tuple[int, int, tuple[int, int, int]]]:
-        """
-        Pinhole Camera-LiDAR Extrinsic Projection:
-        P_cam = R_cam^T * (P_world - T_cam)
-        u = fx * (X_cam / Z_cam) + cx,  v = fy * (Y_cam / Z_cam) + cy
-        """
-        if len(point_cloud) == 0 or cam_spec is None:
+        cam_id: str,
+        image_w: int = 300,
+        image_h: int = 170
+    ) -> list[tuple[int, int, tuple[int, int, int], float]]:
+        if len(point_cloud) == 0:
             return []
 
-        # Subsample for 60 FPS
-        sub_pts = point_cloud[::2]
-        p_world = sub_pts[:, :3]
-        ranges = sub_pts[:, 4]
+        pts_xyz = point_cloud[:, :3]
+        ranges = point_cloud[:, 4]
 
-        p_rel = p_world - cam_spec.pos.reshape(1, 3)
-        p_cam = (cam_spec.R.T @ p_rel.T).T
-
-        valid = p_cam[:, 2] > 0.4
-        p_valid = p_cam[valid]
-        r_valid = ranges[valid]
-
-        if len(p_valid) == 0:
+        # Camera Extrinsic Transformations
+        if cam_id == "FRONT":
+            x_cam = pts_xyz[:, 0]
+            y_cam = pts_xyz[:, 1] - 1.45
+            z_cam = pts_xyz[:, 2]
+        elif cam_id == "REAR":
+            x_cam = -pts_xyz[:, 0]
+            y_cam = pts_xyz[:, 1] - 1.45
+            z_cam = -pts_xyz[:, 2]
+        elif cam_id == "LEFT":
+            x_cam = -pts_xyz[:, 2]
+            y_cam = pts_xyz[:, 1] - 1.45
+            z_cam = -pts_xyz[:, 0]
+        elif cam_id == "RIGHT":
+            x_cam = pts_xyz[:, 2]
+            y_cam = pts_xyz[:, 1] - 1.45
+            z_cam = pts_xyz[:, 0]
+        else:
             return []
 
-        scale_x = img_w / float(cam_spec.w)
-        scale_y = img_h / float(cam_spec.h)
+        # Forward frustum clipping
+        valid_front = z_cam > 1.2
+        x_c = x_cam[valid_front]
+        y_c = y_cam[valid_front]
+        z_c = z_cam[valid_front]
+        r_c = ranges[valid_front]
 
-        fx_scaled = cam_spec.fx * scale_x
-        fy_scaled = cam_spec.fy * scale_y
-        cx_scaled = cam_spec.cx * scale_x
-        cy_scaled = cam_spec.cy * scale_y
+        if len(z_c) == 0:
+            return []
 
-        u_arr = (fx_scaled * p_valid[:, 0]) / p_valid[:, 2] + cx_scaled
-        v_arr = (fy_scaled * p_valid[:, 1]) / p_valid[:, 2] + cy_scaled
+        # Perspective Pin-Hole Projection
+        focal = (image_w * 0.5) / math.tan(math.radians(42.5))
+        u = (image_w * 0.5) + (x_c / z_c) * focal
+        v = (image_h * 0.58) - (y_c / z_c) * focal
 
-        in_bounds = (u_arr >= 0) & (u_arr < img_w) & (v_arr >= 0) & (v_arr < img_h)
-
-        u_final = u_arr[in_bounds].astype(int)
-        v_final = v_arr[in_bounds].astype(int)
-        r_final = r_valid[in_bounds]
+        # Screen boundary filtering
+        valid_screen = (u >= 0) & (u < image_w) & (v >= 0) & (v < image_h)
+        u_valid = u[valid_screen].astype(np.int32)
+        v_valid = v[valid_screen].astype(np.int32)
+        r_valid = r_c[valid_screen]
 
         projected = []
-        for u, v, dist in zip(u_final, v_final, r_final):
-            # Depth Heatmap: Red (<6m), Yellow (12m), Green (20m), Cyan (30m), Blue (45m)
-            norm_d = min(1.0, dist / 35.0)
-            if norm_d < 0.25:
-                r_col = 255
-                g_col = int(norm_d * 4.0 * 255)
-                b_col = 0
-            elif norm_d < 0.50:
-                r_col = int((1.0 - (norm_d - 0.25) * 4.0) * 255)
-                g_col = 255
-                b_col = int((norm_d - 0.25) * 4.0 * 180)
-            elif norm_d < 0.75:
-                r_col = 0
-                g_col = int((1.0 - (norm_d - 0.50) * 4.0) * 255)
-                b_col = 255
+        for i in range(len(u_valid)):
+            dist = r_valid[i]
+            # Heatmap colorization: Red (<8m) -> Yellow (<16m) -> Green (<28m) -> Cyan (<45m) -> Blue
+            if dist < 8.0:
+                color = (255, 30, 30)
+            elif dist < 16.0:
+                color = (255, 180, 0)
+            elif dist < 28.0:
+                color = (0, 255, 120)
+            elif dist < 45.0:
+                color = (0, 220, 255)
             else:
-                r_col = 0
-                g_col = int((1.0 - (norm_d - 0.75) * 4.0) * 120)
-                b_col = int((1.0 - (norm_d - 0.75) * 4.0) * 255)
+                color = (60, 100, 255)
 
-            projected.append((u, v, (r_col, g_col, b_col)))
+            projected.append((int(u_valid[i]), int(v_valid[i]), color, float(dist)))
 
         return projected
+
+    def project_lidar_to_camera_image(self, point_cloud: np.ndarray, cam_spec: dict, img_w: int = 300, img_h: int = 170):
+        """Backward-compatible alias for camera projection."""
+        cam_id = "FRONT"
+        for cid, spec in self.cameras.items():
+            if spec.get("yaw") == cam_spec.get("yaw"):
+                cam_id = cid
+                break
+        res = self.project_points_to_camera(point_cloud, cam_id, img_w, img_h)
+        return [(u, v, color) for u, v, color, _ in res]
