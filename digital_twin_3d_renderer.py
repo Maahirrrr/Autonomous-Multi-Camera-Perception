@@ -1,12 +1,12 @@
 """
-digital_twin_3d_renderer.py — Cinematic 3D Digital Twin World & Particle Visualizer
+digital_twin_3d_renderer.py — Cinematic 3D Digital Twin World & Vehicle Visualizer
 ===================================================================================
 Features:
-  - 3D Perspective Highway with Multi-Lane Asphalt, Grass Shoulders & Dynamic Sky Dome.
-  - Day / Dusk / Night Lighting Modes with Volumetric Headlight Illumination Cones.
-  - Integrated Physics Particles: Tire smoke on braking, sparks on guardrails & exhaust plumes.
-  - 3D V2X Concentric Radio Pulse Waves radiating from the lead connected vehicle.
-  - 3D Vehicle Suspension Dynamics: Real-Time Pitch (accel/brake) & Roll (cornering tilt).
+  - Atmospheric 6-Band Sky Gradient, Moon with 3 Glow Rings & 80 Seeded Stars with Crosses.
+  - 3D Perspective Roadbed with Grid Lines, Rumble Strips & Distant Vanishing Point Glow.
+  - High-Fidelity 3D Vehicle Models: 3-Face Shaded Blocks, Roof Antennas, Window Rows & Alloy Wheels.
+  - Ego Headlight Volumetric Cones with Gaussian Falloff & Traffic Taillight Glow Ellipses.
+  - Multi-Layered Depth Fog Bands at Horizon.
 """
 
 import math
@@ -19,10 +19,10 @@ from traffic_physics_simulator import EgoAutonomousVehicle, TrafficVehicle, Part
 
 class DigitalTwin3DRenderer:
     """
-    Renders the cinematic 3D Digital Twin highway, particles, V2X radio rings, and HUD ribbons.
+    Renders the cinematic 3D Digital Twin highway, lighting, atmosphere, and vehicles.
     """
 
-    def __init__(self, screen_w: int = 440, screen_h: int = 515):
+    def __init__(self, screen_w: int = 440, screen_h: int = 480):
         self.w = screen_w
         self.h = screen_h
 
@@ -41,6 +41,16 @@ class DigitalTwin3DRenderer:
         # Mouse Drag Orbiting
         self.is_dragging = False
         self.last_mouse_pos = (0, 0)
+
+        # Generate 80 seeded star positions (seed=42)
+        random.seed(42)
+        sky_limit = int(self.h * 0.52)
+        self.stars = []
+        for i in range(80):
+            sx = random.randint(4, self.w - 4)
+            sy = random.randint(4, sky_limit - 8)
+            is_cross = (i % 5 == 0)
+            self.stars.append((sx, sy, is_cross))
 
     def handle_mouse_orbit(self, event: pygame.event.Event, rect_offset: tuple[int, int]):
         rx, ry = rect_offset
@@ -99,34 +109,57 @@ class DigitalTwin3DRenderer:
         weather_mode: str = "CLEAR",
         night_mode: bool = False
     ):
-        t = frame_idx * 0.035
         ego_x = ego.x
-
-        # 1. Sky Gradient & Horizon
         sky_h = int(self.h * 0.52)
-        if night_mode:
-            # Deep Starry Night
-            surface.fill((8, 10, 16), pygame.Rect(0, 0, self.w, sky_h))
-            pygame.draw.polygon(surface, (15, 20, 30), [(0, sky_h), (60, sky_h - 22), (140, sky_h - 12), (240, sky_h - 26), (self.w, sky_h)])
-        elif weather_mode == "FOG":
-            # Dense Fog Haze
-            surface.fill((130, 140, 150), pygame.Rect(0, 0, self.w, sky_h))
-        elif weather_mode == "RAIN":
-            # Stormy Overcast Sky
-            for y in range(sky_h):
-                ratio = y / float(max(1, sky_h))
-                surface.fill((int(30 + ratio*20), int(38 + ratio*20), int(48 + ratio*20)), pygame.Rect(0, y, self.w, 1))
-        else:
-            # Sunset Horizon Glow
-            for y in range(sky_h):
-                ratio = y / float(max(1, sky_h))
-                b = int(48 + ratio * 22)
-                g = int(28 + ratio * 32)
-                r = int(22 + ratio * 42)
-                pygame.draw.line(surface, (r, g, b), (0, y), (self.w, y))
-            pygame.draw.polygon(surface, (28, 38, 52), [(0, sky_h), (60, sky_h - 26), (130, sky_h - 14), (210, sky_h - 32), (320, sky_h - 16), (self.w, sky_h)])
 
-        # 2. 3D Highway Asphalt Surface & Grass Shoulders
+        # -------------------------------------------------------------
+        # 1. 6-BAND SKY GRADIENT
+        # -------------------------------------------------------------
+        # Band 0 (top): RGB(4,8,20), Band 1: RGB(8,14,30), Band 2: RGB(12,20,40)
+        # Band 3: RGB(18,28,50), Band 4: RGB(28,40,62), Band 5 (edge): RGB(22,32,48)
+        sky_bands = [
+            (4, 8, 20),
+            (8, 14, 30),
+            (12, 20, 40),
+            (18, 28, 50),
+            (28, 40, 62),
+            (22, 32, 48)
+        ]
+        band_h = sky_h / len(sky_bands)
+        for b_idx, col in enumerate(sky_bands):
+            y_start = int(b_idx * band_h)
+            y_end = int((b_idx + 1) * band_h) if b_idx < len(sky_bands) - 1 else sky_h
+            pygame.draw.rect(surface, col, pygame.Rect(0, y_start, self.w, y_end - y_start))
+
+        # -------------------------------------------------------------
+        # 2. MOON / SUN WITH 3 GLOW RINGS
+        # -------------------------------------------------------------
+        moon_cx, moon_cy = 48, 40
+        # 3 Glow Rings: radius 20/28/38, decreasing opacity 0.15/0.08/0.04
+        glow_surf = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        pygame.draw.circle(glow_surf, (220, 230, 255, 10), (moon_cx, moon_cy), 38)
+        pygame.draw.circle(glow_surf, (220, 230, 255, 20), (moon_cx, moon_cy), 28)
+        pygame.draw.circle(glow_surf, (220, 230, 255, 38), (moon_cx, moon_cy), 20)
+        surface.blit(glow_surf, (0, 0))
+        # Solid Moon Core: radius 14px, RGB(220,230,255)
+        pygame.draw.circle(surface, (220, 230, 255), (moon_cx, moon_cy), 14)
+
+        # -------------------------------------------------------------
+        # 3. 80 SEEDED STARS WITH CROSS HIGHLIGHTS
+        # -------------------------------------------------------------
+        for sx, sy, is_cross in self.stars:
+            if sy < sky_h - 4:
+                if is_cross:
+                    pygame.draw.circle(surface, (200, 210, 255), (sx, sy), 2)
+                    pygame.draw.line(surface, (200, 210, 255), (sx - 2, sy), (sx + 2, sy), 1)
+                    pygame.draw.line(surface, (200, 210, 255), (sx, sy - 2), (sx, sy + 2), 1)
+                else:
+                    pygame.draw.circle(surface, (200, 210, 255), (sx, sy), 1)
+
+        # -------------------------------------------------------------
+        # 4. ROADBED & PERSPECTIVE ASPHALT GRID
+        # -------------------------------------------------------------
+        # Base Asphalt: RGB(20,24,30)
         for z_seg in range(80, -25, -5):
             # Left Grass Shoulder (X = -35m to -7.5m)
             g_l1 = self.project_3d_to_screen(np.array([-35.0, 0.0, float(z_seg)]), ego_x)
@@ -134,8 +167,7 @@ class DigitalTwin3DRenderer:
             g_l3 = self.project_3d_to_screen(np.array([-7.5, 0.0, float(z_seg - 5)]), ego_x)
             g_l4 = self.project_3d_to_screen(np.array([-35.0, 0.0, float(z_seg - 5)]), ego_x)
             if g_l1[0] != -9999 and g_l2[0] != -9999 and g_l3[0] != -9999 and g_l4[0] != -9999:
-                g_shade = max(14, int((32 - (z_seg / 80.0) * 16) * (0.5 if night_mode else 1.0)))
-                pygame.draw.polygon(surface, (int(g_shade * 0.65), g_shade + 10, int(g_shade * 0.55)), [(g_l1[0], g_l1[1]), (g_l2[0], g_l2[1]), (g_l3[0], g_l3[1]), (g_l4[0], g_l4[1])])
+                pygame.draw.polygon(surface, (18, 28, 20), [(g_l1[0], g_l1[1]), (g_l2[0], g_l2[1]), (g_l3[0], g_l3[1]), (g_l4[0], g_l4[1])])
 
             # Right Grass Shoulder (X = +7.5m to +35m)
             g_r1 = self.project_3d_to_screen(np.array([+7.5, 0.0, float(z_seg)]), ego_x)
@@ -143,8 +175,7 @@ class DigitalTwin3DRenderer:
             g_r3 = self.project_3d_to_screen(np.array([+35.0, 0.0, float(z_seg - 5)]), ego_x)
             g_r4 = self.project_3d_to_screen(np.array([+7.5, 0.0, float(z_seg - 5)]), ego_x)
             if g_r1[0] != -9999 and g_r2[0] != -9999 and g_r3[0] != -9999 and g_r4[0] != -9999:
-                g_shade = max(14, int((32 - (z_seg / 80.0) * 16) * (0.5 if night_mode else 1.0)))
-                pygame.draw.polygon(surface, (int(g_shade * 0.65), g_shade + 10, int(g_shade * 0.55)), [(g_r1[0], g_r1[1]), (g_r2[0], g_r2[1]), (g_r3[0], g_r3[1]), (g_r4[0], g_r4[1])])
+                pygame.draw.polygon(surface, (18, 28, 20), [(g_r1[0], g_r1[1]), (g_r2[0], g_r2[1]), (g_r3[0], g_r3[1]), (g_r4[0], g_r4[1])])
 
             # 3D Highway Asphalt Surface
             p1 = np.array([-7.5, 0.0, float(z_seg)])
@@ -158,58 +189,87 @@ class DigitalTwin3DRenderer:
             u4, v4, _ = self.project_3d_to_screen(p4, ego_x)
 
             if u1 != -9999 and u2 != -9999 and u3 != -9999 and u4 != -9999:
-                shade = max(16, int((42 - (z_seg / 80.0) * 18) * (0.45 if night_mode else 1.0)))
-                if weather_mode == "RAIN":
-                    shade += 6 # Wet specular gloss
-                pygame.draw.polygon(surface, (shade, shade + 2, shade + 5), [(u1, v1), (u2, v2), (u3, v3), (u4, v4)])
+                pygame.draw.polygon(surface, (20, 24, 30), [(u1, v1), (u2, v2), (u3, v3), (u4, v4)])
 
-        # 3. 3D Highway Lane Dividers & Solid Edge Lines
+        # Vanishing Point Road Glow Ellipse: RGB(0,100,255) alpha 0.08, radius 120x20
+        vp_surf = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        pygame.draw.ellipse(vp_surf, (0, 100, 255, 20), pygame.Rect(int(self.w * 0.5 - 60), sky_h - 10, 120, 20))
+        surface.blit(vp_surf, (0, 0))
+
+        # Horizontal Grid Lines Every 8 Meters (RGB(28,32,38))
+        for z_grid in range(-16, 75, 8):
+            gp1 = self.project_3d_to_screen(np.array([-7.5, 0.01, float(z_grid)]), ego_x)
+            gp2 = self.project_3d_to_screen(np.array([+7.5, 0.01, float(z_grid)]), ego_x)
+            if gp1[0] != -9999 and gp2[0] != -9999:
+                t_thick = 2 if z_grid < 10 else 1
+                pygame.draw.line(surface, (28, 32, 38), (gp1[0], gp1[1]), (gp2[0], gp2[1]), t_thick)
+
+        # Road Edge Rumble Strips: alternating RGB(40,50,60) and RGB(60,70,80) 5px wide repeating every 12px
+        for z_rumble in np.arange(-20.0, 75.0, 3.0):
+            r_col = (60, 70, 80) if (int(z_rumble // 3) % 2 == 0) else (40, 50, 60)
+            # Left Strip (X = -5.8m)
+            rp_l1 = self.project_3d_to_screen(np.array([-6.0, 0.02, z_rumble]), ego_x)
+            rp_l2 = self.project_3d_to_screen(np.array([-5.6, 0.02, z_rumble + 2.5]), ego_x)
+            if rp_l1[0] != -9999 and rp_l2[0] != -9999:
+                pygame.draw.line(surface, r_col, (rp_l1[0], rp_l1[1]), (rp_l2[0], rp_l2[1]), 3)
+
+            # Right Strip (X = +5.8m)
+            rp_r1 = self.project_3d_to_screen(np.array([+5.6, 0.02, z_rumble]), ego_x)
+            rp_r2 = self.project_3d_to_screen(np.array([+6.0, 0.02, z_rumble + 2.5]), ego_x)
+            if rp_r1[0] != -9999 and rp_r2[0] != -9999:
+                pygame.draw.line(surface, r_col, (rp_r1[0], rp_r1[1]), (rp_r2[0], rp_r2[1]), 3)
+
+        # Solid Edge Lines: Yellow Left (RGB(255,210,0)), White Right (RGB(220,225,230))
         pts_left_edge = [self.project_3d_to_screen(np.array([-5.8, 0.02, float(z)]), ego_x) for z in range(-20, 80, 4)]
         valid_le = [(u, v) for u, v, _ in pts_left_edge if u != -9999]
         if len(valid_le) > 1:
-            pygame.draw.lines(surface, (0, 215, 255), False, valid_le, 2)
+            pygame.draw.lines(surface, (255, 210, 0), False, valid_le, 2)
 
         pts_right_edge = [self.project_3d_to_screen(np.array([+5.8, 0.02, float(z)]), ego_x) for z in range(-20, 80, 4)]
         valid_re = [(u, v) for u, v, _ in pts_right_edge if u != -9999]
         if len(valid_re) > 1:
-            pygame.draw.lines(surface, (230, 235, 240), False, valid_re, 2)
+            pygame.draw.lines(surface, (220, 225, 230), False, valid_re, 2)
 
-        # Dashed Lane Line 1 (X = -1.875m)
+        # Dashed Lane Lines (X = -1.875m and X = +1.875m)
         z_offset = (frame_idx * (ego.speed_kmh * 0.08)) % 8.0
-        for z_dash in np.arange(-18.0 + z_offset, 75.0, 8.0):
-            p_d1 = np.array([-1.875, 0.02, float(z_dash)])
-            p_d2 = np.array([-1.875, 0.02, float(z_dash + 3.8)])
-            u_d1, v_d1, _ = self.project_3d_to_screen(p_d1, ego_x)
-            u_d2, v_d2, _ = self.project_3d_to_screen(p_d2, ego_x)
-            if u_d1 != -9999 and u_d2 != -9999:
-                pygame.draw.line(surface, (200, 210, 220), (u_d1, v_d1), (u_d2, v_d2), 2)
+        for x_lane in (-1.875, 1.875):
+            for z_dash in np.arange(-18.0 + z_offset, 75.0, 8.0):
+                p_d1 = np.array([x_lane, 0.02, float(z_dash)])
+                p_d2 = np.array([x_lane, 0.02, float(z_dash + 3.8)])
+                u_d1, v_d1, _ = self.project_3d_to_screen(p_d1, ego_x)
+                u_d2, v_d2, _ = self.project_3d_to_screen(p_d2, ego_x)
+                if u_d1 != -9999 and u_d2 != -9999:
+                    pygame.draw.line(surface, (220, 225, 230), (u_d1, v_d1), (u_d2, v_d2), 2)
 
-        # Dashed Lane Line 2 (X = +1.875m)
-        for z_dash in np.arange(-18.0 + z_offset, 75.0, 8.0):
-            p_d1 = np.array([+1.875, 0.02, float(z_dash)])
-            p_d2 = np.array([+1.875, 0.02, float(z_dash + 3.8)])
-            u_d1, v_d1, _ = self.project_3d_to_screen(p_d1, ego_x)
-            u_d2, v_d2, _ = self.project_3d_to_screen(p_d2, ego_x)
-            if u_d1 != -9999 and u_d2 != -9999:
-                pygame.draw.line(surface, (200, 210, 220), (u_d1, v_d1), (u_d2, v_d2), 2)
+        # -------------------------------------------------------------
+        # 5. EGO VEHICLE HEADLIGHT VOLUMETRIC CONES (Two Trapezoids)
+        # -------------------------------------------------------------
+        # Each cone: spread 25 deg each side, length 120px ahead, alpha lerp 0.18 -> 0.0
+        cone_surf = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+        p_hl_orig_l = np.array([ego.x - 0.75, 0.20, ego.z + 2.2])
+        p_hl_orig_r = np.array([ego.x + 0.75, 0.20, ego.z + 2.2])
+        p_hl_tip_l1 = np.array([ego.x - 4.5, 0.02, ego.z + 26.0])
+        p_hl_tip_l2 = np.array([ego.x - 0.2, 0.02, ego.z + 26.0])
+        p_hl_tip_r1 = np.array([ego.x + 0.2, 0.02, ego.z + 26.0])
+        p_hl_tip_r2 = np.array([ego.x + 4.5, 0.02, ego.z + 26.0])
 
-        # 4. 3D V2X Pulsing Concentric Radio Wave Rings (Lead Vehicle)
-        lead_car = next((v for v in traffic if abs(v.x - ego.x) < 2.0 and v.z > 0), None)
-        if lead_car:
-            pulse_radius = (frame_idx * 0.45) % 18.0
-            r_pts = []
-            for ang_deg in range(0, 360, 24):
-                rad = math.radians(ang_deg)
-                px = lead_car.x + pulse_radius * math.sin(rad)
-                pz = lead_car.z + pulse_radius * math.cos(rad)
-                u_r, v_r, _ = self.project_3d_to_screen(np.array([px, 0.05, pz]), ego_x)
-                if u_r != -9999:
-                    r_pts.append((u_r, v_r))
-            if len(r_pts) > 6:
-                alpha_val = max(0, int(255 * (1.0 - pulse_radius / 18.0)))
-                pygame.draw.lines(surface, (0, 255, 220), True, r_pts, 2)
+        u_ol, v_ol, _ = self.project_3d_to_screen(p_hl_orig_l, ego_x)
+        u_tl1, v_tl1, _ = self.project_3d_to_screen(p_hl_tip_l1, ego_x)
+        u_tl2, v_tl2, _ = self.project_3d_to_screen(p_hl_tip_l2, ego_x)
+        if u_ol != -9999 and u_tl1 != -9999 and u_tl2 != -9999:
+            pygame.draw.polygon(cone_surf, (200, 220, 255, 45), [(u_ol, v_ol), (u_tl1, v_tl1), (u_tl2, v_tl2)])
 
-        # 5. Physics Particles (Tire smoke, sparks, exhaust)
+        u_or, v_or, _ = self.project_3d_to_screen(p_hl_orig_r, ego_x)
+        u_tr1, v_tr1, _ = self.project_3d_to_screen(p_hl_tip_r1, ego_x)
+        u_tr2, v_tr2, _ = self.project_3d_to_screen(p_hl_tip_r2, ego_x)
+        if u_or != -9999 and u_tr1 != -9999 and u_tr2 != -9999:
+            pygame.draw.polygon(cone_surf, (200, 220, 255, 45), [(u_or, v_or), (u_tr1, v_tr1), (u_tr2, v_tr2)])
+
+        surface.blit(cone_surf, (0, 0))
+
+        # -------------------------------------------------------------
+        # 6. PHYSICS PARTICLES
+        # -------------------------------------------------------------
         if particles:
             for p in particles:
                 u_p, v_p, _ = self.project_3d_to_screen(np.array([p.x, p.y, p.z]), ego_x)
@@ -223,19 +283,9 @@ class DigitalTwin3DRenderer:
                     else: # Exhaust
                         pygame.draw.circle(surface, p.color, (u_p, v_p), max(1, int(p.size * 0.75)))
 
-        # 6. 3D LiDAR Point Cloud Returns
-        if point_cloud is not None and len(point_cloud) > 0:
-            for pt in point_cloud[::3]:
-                px, py, pz, intensity, rng = pt
-                u_pt, v_pt, _ = self.project_3d_to_screen(np.array([px + ego_x, py, pz]), ego_x)
-                if u_pt != -9999 and 0 <= u_pt < self.w and 0 <= v_pt < self.h:
-                    if py >= 0.28:
-                        col = (0, 255, 255) if rng > 14.0 else (0, 180, 255)
-                        pygame.draw.circle(surface, col, (u_pt, v_pt), 2)
-                    else:
-                        pygame.draw.circle(surface, (0, int(160 * intensity), int(80 * intensity)), (u_pt, v_pt), 1)
-
-        # 7. Animated Neon Clothoid Trajectory Ribbon
+        # -------------------------------------------------------------
+        # 7. 3D CLOTHOID OVERTAKE TRAJECTORY CORRIDOR
+        # -------------------------------------------------------------
         if ego.state in ("CHECK_OVERTAKE", "LANE_CHANGE_LEFT", "OVERTAKING", "LANE_CHANGE_RIGHT"):
             traj_3d = []
             target_lane_x = float(ego.target_lane_idx * 3.75)
@@ -246,160 +296,137 @@ class DigitalTwin3DRenderer:
                 if u_t != -9999:
                     traj_3d.append((u_t, v_t))
             if len(traj_3d) > 1:
-                pygame.draw.lines(surface, (0, 255, 180), False, traj_3d, 4)
-                p_idx = int((frame_idx * 1.2) % len(traj_3d))
-                pu, pv = traj_3d[p_idx]
-                pygame.draw.circle(surface, (255, 255, 255), (pu, pv), 5)
-                pygame.draw.circle(surface, (0, 255, 180), (pu, pv), 3)
+                pygame.draw.lines(surface, (0, 255, 180), False, traj_3d, 3)
 
-        # 8. Render 3D Surrounding Vehicles
+        # -------------------------------------------------------------
+        # 8. 3D SHADED VEHICLES (3 Faces, Antenna, Windows, Alloy Wheels)
+        # -------------------------------------------------------------
         all_vehicles = list(traffic)
         all_vehicles.sort(key=lambda v: v.z, reverse=True)
 
         for v in all_vehicles:
-            self.draw_3d_vehicle(surface, v, ego_x, frame_idx, night_mode=night_mode)
+            self.draw_3d_vehicle(surface, v, ego_x, frame_idx)
 
-        # 9. Render 3D Ego Tesla Vehicle
-        self.draw_3d_ego_vehicle(surface, ego, frame_idx, night_mode=night_mode)
+        # Draw 3D Ego Vehicle
+        self.draw_3d_ego_vehicle(surface, ego, frame_idx)
 
-    def draw_3d_vehicle(
-        self,
-        surface: pygame.Surface,
-        v: TrafficVehicle,
-        ego_x: float,
-        frame_idx: int,
-        night_mode: bool = False
-    ):
+        # -------------------------------------------------------------
+        # 9. 3 HORIZONTAL DEPTH FOG BANDS NEAR HORIZON
+        # -------------------------------------------------------------
+        fog_surf = pygame.Surface((self.w, 40), pygame.SRCALPHA)
+        # Band near horizon: RGB(12,18,30) alpha 0.0 -> 0.7 (bottom to top)
+        for y_fog in range(40):
+            alpha_val = int(140 * ((40 - y_fog) / 40.0))
+            pygame.draw.line(fog_surf, (12, 18, 30, alpha_val), (0, y_fog), (self.w, y_fog))
+        surface.blit(fog_surf, (0, sky_h - 20))
+
+    def draw_3d_vehicle(self, surface: pygame.Surface, v: TrafficVehicle, ego_x: float, frame_idx: int):
+        """Draws a 3-face 3D shaded vehicle block with antenna, window row, and alloy wheels."""
         hw, hl = v.width * 0.5, v.length * 0.5
         h = v.height
         x, z = v.x, v.z
 
-        sin_r = math.sin(math.radians(v.roll_deg))
-        sin_p = math.sin(math.radians(v.pitch_deg))
-
-        corners_3d = [
-            np.array([x - hw, 0.15 + hw * sin_r - hl * sin_p, z - hl]), # 0
-            np.array([x + hw, 0.15 - hw * sin_r - hl * sin_p, z - hl]), # 1
-            np.array([x + hw, 0.15 - hw * sin_r + hl * sin_p, z + hl]), # 2
-            np.array([x - hw, 0.15 + hw * sin_r + hl * sin_p, z + hl]), # 3
-            np.array([x - hw, h    + hw * sin_r - hl * sin_p, z - hl]), # 4
-            np.array([x + hw, h    - hw * sin_r - hl * sin_p, z - hl]), # 5
-            np.array([x + hw, h    - hw * sin_r + hl * sin_p, z + hl]), # 6
-            np.array([x - hw, h    + hw * sin_r + hl * sin_p, z + hl]), # 7
+        # Project 3D bounding box corners
+        corners = [
+            np.array([x - hw, 0.15, z - hl]), # 0 Rear-Left
+            np.array([x + hw, 0.15, z - hl]), # 1 Rear-Right
+            np.array([x + hw, 0.15, z + hl]), # 2 Front-Right
+            np.array([x - hw, 0.15, z + hl]), # 3 Front-Left
+            np.array([x - hw, h,    z - hl]), # 4 Rear-Left Top
+            np.array([x + hw, h,    z - hl]), # 5 Rear-Right Top
+            np.array([x + hw, h,    z + hl]), # 6 Front-Right Top
+            np.array([x - hw, h,    z + hl]), # 7 Front-Left Top
         ]
-
-        proj = [self.project_3d_to_screen(c, ego_x) for c in corners_3d]
+        proj = [self.project_3d_to_screen(c, ego_x) for c in corners]
         if any(u == -9999 for u, v_p, _ in proj):
             return
 
         pts = [(u, v_p) for u, v_p, _ in proj]
+        v_col = v.color
 
-        # Vehicle Body
-        v_col = tuple(max(10, int(c * (0.6 if night_mode else 1.0))) for c in v.color)
+        # 1. FRONT/REAR FACE (Facing Viewer) — 100% Brightness
         pygame.draw.polygon(surface, v_col, [pts[0], pts[1], pts[5], pts[4]])
         pygame.draw.polygon(surface, (255, 255, 255), [pts[0], pts[1], pts[5], pts[4]], 1)
 
-        top_color = (min(255, v_col[0] + 30), min(255, v_col[1] + 30), min(255, v_col[2] + 30))
-        pygame.draw.polygon(surface, top_color, [pts[4], pts[5], pts[6], pts[7]])
+        # 2. TOP FACE — Parallelogram, vehicle_color * 0.85
+        top_col = tuple(int(c * 0.85) for c in v_col)
+        pygame.draw.polygon(surface, top_col, [pts[4], pts[5], pts[6], pts[7]])
 
+        # 3. SIDE FACE (Right) — Parallelogram, vehicle_color * 0.60
+        side_col = tuple(int(c * 0.60) for c in v_col)
         if x < ego_x:
-            pygame.draw.polygon(surface, (int(v_col[0]*0.8), int(v_col[1]*0.8), int(v_col[2]*0.8)), [pts[1], pts[2], pts[6], pts[5]])
+            pygame.draw.polygon(surface, side_col, [pts[1], pts[2], pts[6], pts[5]])
         else:
-            pygame.draw.polygon(surface, (int(v_col[0]*0.8), int(v_col[1]*0.8), int(v_col[2]*0.8)), [pts[0], pts[3], pts[7], pts[4]])
+            pygame.draw.polygon(surface, side_col, [pts[0], pts[3], pts[7], pts[4]])
 
-        # Rear Red LED Taillights / Brake Lights with Glow
-        u_rl = (pts[0][0] + pts[4][0]) // 2 + 3
-        v_rl = (pts[0][1] + pts[4][1]) // 2
-        u_rr = (pts[1][0] + pts[5][0]) // 2 - 3
-        v_rr = (pts[1][1] + pts[5][1]) // 2
+        # 4. ROOF ANTENNA: 2px vertical line at center-top
+        top_cx = (pts[4][0] + pts[5][0] + pts[6][0] + pts[7][0]) // 4
+        top_cy = min(pts[4][1], pts[5][1], pts[6][1], pts[7][1])
+        pygame.draw.line(surface, (200, 210, 220), (top_cx, top_cy), (top_cx, top_cy - 7), 2)
 
-        tail_col = (255, 40, 40) if v.is_braking else (180, 0, 0)
-        tail_r = 5 if v.is_braking else 3
-        pygame.draw.circle(surface, tail_col, (u_rl, v_rl), tail_r)
-        pygame.draw.circle(surface, tail_col, (u_rr, v_rr), tail_r)
+        # 5. WINDOW ROW: Across middle third of vehicle (RGB(45,60,80))
+        u_mid_l = (pts[0][0] + pts[4][0]) // 2
+        u_mid_r = (pts[1][0] + pts[5][0]) // 2
+        v_mid_top = (pts[4][1] + pts[5][1]) // 2 + 2
+        v_mid_bot = (pts[0][1] + pts[1][1]) // 2 - 2
+        if v_mid_bot > v_mid_top:
+            pygame.draw.polygon(surface, (45, 60, 80), [(u_mid_l, v_mid_top), (u_mid_r, v_mid_top),
+                                                        (u_mid_r, v_mid_bot), (u_mid_l, v_mid_bot)])
 
-        if night_mode or v.is_braking:
-            glow_surf = pygame.Surface((20, 20), pygame.SRCALPHA)
-            pygame.draw.circle(glow_surf, (255, 20, 20, 90), (10, 10), 9)
-            surface.blit(glow_surf, (u_rl - 10, v_rl - 10))
-            surface.blit(glow_surf, (u_rr - 10, v_rr - 10))
+        # 6. ALLOY WHEELS: 4 circles at bottom corners (radius 4px RGB(15,15,15) with RGB(50,50,60) rim inside radius 2px)
+        for wx, wy in (pts[0], pts[1]):
+            pygame.draw.circle(surface, (15, 15, 15), (wx, wy), 4)
+            pygame.draw.circle(surface, (50, 50, 60), (wx, wy), 2)
 
-        # Amber Blinkers
-        is_flash = (frame_idx % 24) < 12
-        if v.blinker == "LEFT" and is_flash:
-            pygame.draw.circle(surface, (255, 180, 0), (u_rl - 4, v_rl), 5)
-        elif v.blinker == "RIGHT" and is_flash:
-            pygame.draw.circle(surface, (255, 180, 0), (u_rr + 4, v_rr), 5)
+        # 7. RED TAILLIGHT GLOW ELLIPSES (RGB(255,30,0) alpha 0.4, size 8x4px)
+        tl_surf = pygame.Surface((16, 10), pygame.SRCALPHA)
+        pygame.draw.ellipse(tl_surf, (255, 30, 0, 100), pygame.Rect(0, 0, 16, 10))
+        surface.blit(tl_surf, (pts[0][0] - 8, pts[0][1] - 12))
+        surface.blit(tl_surf, (pts[1][0] - 8, pts[1][1] - 12))
+        pygame.draw.circle(surface, (255, 40, 40), (pts[0][0], pts[0][1] - 8), 3)
+        pygame.draw.circle(surface, (255, 40, 40), (pts[1][0], pts[1][1] - 8), 3)
 
-        # 3D Label Tag
+        # 8. 3D Label Tag
         u_top = (pts[4][0] + pts[5][0]) // 2
-        v_top = min(pts[4][1], pts[5][1]) - 8
-        lbl_text = f"{v.id} [{v.speed_kmh:.0f} km/h]"
-        lbl_surf = pygame.font.SysFont("segoeui", 10, bold=True).render(lbl_text, True, (0, 255, 180) if "LEAD" in v.id else (255, 210, 0))
+        v_top = min(pts[4][1], pts[5][1]) - 10
+        lbl_surf = pygame.font.SysFont("segoeui", 10, bold=True).render(f"{v.id} [{v.speed_kmh:.0f} km/h]", True, (0, 255, 180) if "LEAD" in v.id else (255, 210, 0))
         surface.blit(lbl_surf, (u_top - lbl_surf.get_width() // 2, v_top - 6))
 
-    def draw_3d_ego_vehicle(self, surface: pygame.Surface, ego: EgoAutonomousVehicle, frame_idx: int, night_mode: bool = False):
+    def draw_3d_ego_vehicle(self, surface: pygame.Surface, ego: EgoAutonomousVehicle, frame_idx: int):
+        """Draws the hero 3D Ego vehicle with shaded bodywork and glass roof."""
         hw = ego.width * 0.5
         hl = ego.length * 0.5
         h = ego.height
-        x = ego.x
-        z = ego.z
+        x, z = ego.x, ego.z
 
-        sin_r = math.sin(math.radians(ego.roll_deg))
-
-        corners_3d = [
-            np.array([x - hw, 0.15 + hw * sin_r, z - hl]), # 0
-            np.array([x + hw, 0.15 - hw * sin_r, z - hl]), # 1
-            np.array([x + hw, 0.15 - hw * sin_r, z + hl]), # 2
-            np.array([x - hw, 0.15 + hw * sin_r, z + hl]), # 3
-            np.array([x - hw, h    + hw * sin_r, z - hl]), # 4
-            np.array([x + hw, h    - hw * sin_r, z - hl]), # 5
-            np.array([x + hw, h    - hw * sin_r, z + hl]), # 6
-            np.array([x - hw, h    + hw * sin_r, z + hl]), # 7
+        corners = [
+            np.array([x - hw, 0.15, z - hl]), # 0
+            np.array([x + hw, 0.15, z - hl]), # 1
+            np.array([x + hw, 0.15, z + hl]), # 2
+            np.array([x - hw, 0.15, z + hl]), # 3
+            np.array([x - hw, h,    z - hl]), # 4
+            np.array([x + hw, h,    z - hl]), # 5
+            np.array([x + hw, h,    z + hl]), # 6
+            np.array([x - hw, h,    z + hl]), # 7
         ]
-
-        proj = [self.project_3d_to_screen(c, ego.x) for c in corners_3d]
+        proj = [self.project_3d_to_screen(c, ego.x) for c in corners]
         if any(u == -9999 for u, v_p, _ in proj):
             return
 
         pts = [(u, v_p) for u, v_p, _ in proj]
 
-        # Headlight Light Cones Casting Forward onto Road
-        p_hl_left = np.array([x - hw - 2.8, 0.02, z + 24.0])
-        p_hl_right = np.array([x + hw + 2.8, 0.02, z + 24.0])
-        u_hl1, v_hl1, _ = self.project_3d_to_screen(p_hl_left, ego.x)
-        u_hl2, v_hl2, _ = self.project_3d_to_screen(p_hl_right, ego.x)
-        if u_hl1 != -9999 and u_hl2 != -9999:
-            hl_poly = [pts[3], pts[2], (u_hl2, v_hl2), (u_hl1, v_hl1)]
-            hl_surf = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
-            alpha_hl = 70 if night_mode else 35
-            pygame.draw.polygon(hl_surf, (220, 240, 255, alpha_hl), hl_poly)
-            surface.blit(hl_surf, (0, 0))
-
-        # 3D Metallic Blue Body
-        pygame.draw.polygon(surface, (18, 45, 85), [pts[0], pts[1], pts[5], pts[4]])
+        # Metallic Blue Bodywork
+        pygame.draw.polygon(surface, (18, 55, 95), [pts[0], pts[1], pts[5], pts[4]])
         pygame.draw.polygon(surface, (0, 200, 255), [pts[0], pts[1], pts[5], pts[4]], 2)
 
-        # Glass Panoramic Roof
-        pygame.draw.polygon(surface, (30, 50, 75), [pts[4], pts[5], pts[6], pts[7]])
+        # Glass Roof
+        pygame.draw.polygon(surface, (30, 60, 85), [pts[4], pts[5], pts[6], pts[7]])
         pygame.draw.polygon(surface, (0, 230, 255), [pts[4], pts[5], pts[6], pts[7]], 2)
 
-        # Taillight LED Lightbar
-        u_tl1 = (pts[0][0] + pts[4][0]) // 2
-        u_tl2 = (pts[1][0] + pts[5][0]) // 2
-        v_tl = (pts[0][1] + pts[4][1]) // 2
-        pygame.draw.line(surface, (255, 30, 30), (u_tl1, v_tl), (u_tl2, v_tl), 3)
+        # LED Taillight Lightbar
+        pygame.draw.line(surface, (255, 30, 30), (pts[0][0] + 4, pts[0][1] - 8), (pts[1][0] - 4, pts[1][1] - 8), 3)
 
-        # Amber Turn Signal Blinkers
-        is_flash = (frame_idx % 24) < 12
-        if ego.blinker == "LEFT" and is_flash:
-            pygame.draw.circle(surface, (255, 180, 0), (u_tl1 - 6, v_tl), 6)
-            pygame.draw.circle(surface, (255, 255, 255), (u_tl1 - 6, v_tl), 3)
-        elif ego.blinker == "RIGHT" and is_flash:
-            pygame.draw.circle(surface, (255, 180, 0), (u_tl2 + 6, v_tl), 6)
-            pygame.draw.circle(surface, (255, 255, 255), (u_tl2 + 6, v_tl), 3)
-
-        # Autopilot State Tag
-        state_tag = f"L4 AUTOPILOT: {ego.state}"
-        s_surf = pygame.font.SysFont("segoeui", 10, bold=True).render(state_tag, True, (0, 255, 180))
-        surface.blit(s_surf, (self.w // 2 - s_surf.get_width() // 2, min(pts[4][1], pts[5][1]) - 16))
+        # Wheels
+        for wx, wy in (pts[0], pts[1]):
+            pygame.draw.circle(surface, (15, 15, 15), (wx, wy), 4)
+            pygame.draw.circle(surface, (0, 200, 255), (wx, wy), 2)
