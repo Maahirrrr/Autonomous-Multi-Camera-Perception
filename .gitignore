@@ -3,18 +3,33 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Pytest / Test caches
+# Pytest / Testing caches
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Video outputs & recordings
+# Virtual Environments
+.venv/
+venv/
+env/
+ENV/
+
+# Media & Recordings (Local artifacts)
 *.mp4
 *.avi
 *.mov
+*.png
+*.jpg
+*.jpeg
+*.metadata.json
 
-# Environment / IDE
+# OS specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor files
 .vscode/
 .idea/
 *.swp
-*.metadata.json
+*.swo
