@@ -1,14 +1,19 @@
 """
-traffic_physics_simulator.py — Real-Time Driving Dynamics & High-Fidelity Physics Engine
-========================================================================================
-Physics Models & Algorithms:
-  - Refined Intelligent Driver Model (IDM): T=1.2s safe headway, s0=3.0m standstill gap, delta=4.0.
-  - MOBIL Lane Changing: Courtesy factor p=0.20, politeness threshold d_a=0.25 m/s^2.
-  - Quintic Polynomial (5th-Order Spline) C2-continuous smooth lane changes.
-  - Critical Suspension Damping (Spring-Damper 2nd order response) for pitch & roll.
-  - Exponential Moving Average (EMA) Smoothed 5-Second G-Force History Buffer.
-  - Two-Track Ackermann Steering Kinematics.
-  - V2X (Vehicle-to-Everything) SAE J2735 BSM Telemetry.
+traffic_physics_simulator.py — Real-Time Tesla Level 4 Autopilot Physics Engine
+================================================================================
+Mathematical Models & Algorithms:
+  1. Intelligent Driver Model (IDM) Longitudinal Control:
+     a = a_max * [ 1 - (v / v0)^4 - (s*(v, delta_v) / s)^2 ]
+     where s* = s0 + v * T + (v * delta_v) / (2 * sqrt(a_max * b))
+  2. MOBIL (Minimizing Overall Braking Induced by Lane changes):
+     Incentive criterion with politeness factor p = 0.15 and threshold d_a = 0.20 m/s^2.
+  3. 5th-Order Quintic Polynomial Lateral Trajectory:
+     x(tau) = x_start + delta_x * (10*tau^3 - 15*tau^4 + 6*tau^5), tau in [0, 1]
+     Analytic velocity: x_dot(tau) = (delta_x / T_dur) * (30*tau^2 - 60*tau^3 + 30*tau^4)
+     Analytic acceleration: x_ddot(tau) = (delta_x / T_dur^2) * (60*tau - 180*tau^2 + 120*tau^3)
+  4. Two-Track Ackermann Steering Kinematics:
+     delta_inner = arctan( L / (R - t/2) ), delta_outer = arctan( L / (R + t/2) )
+  5. 2nd-Order Critical Suspension Damping & Exponential Moving Average (EMA) G-Force History.
 """
 
 import math
@@ -44,12 +49,12 @@ class ParticleEmitter:
                 x=x + random.uniform(-0.3, 0.3),
                 y=0.10,
                 z=z + random.uniform(-0.25, 0.25),
-                vx=random.uniform(-0.5, 0.5),
+                vx=random.uniform(-0.4, 0.4),
                 vy=random.uniform(0.3, 0.7),
                 vz=random.uniform(-1.2, -0.4),
-                size=random.uniform(2.5, 6.0),
+                size=random.uniform(2.5, 5.5),
                 alpha=0.80,
-                color=(225, 230, 240),
+                color=(220, 225, 235),
                 life=0.0,
                 max_life=random.uniform(0.5, 1.0),
                 p_type="SMOKE"
@@ -73,7 +78,7 @@ class ParticleEmitter:
             ))
 
     def emit_exhaust(self, x: float, y: float, z: float, speed_kmh: float):
-        if random.random() < 0.30:
+        if random.random() < 0.25:
             self.particles.append(Particle(
                 x=x + random.uniform(-0.2, 0.2),
                 y=y,
@@ -82,8 +87,8 @@ class ParticleEmitter:
                 vy=random.uniform(0.1, 0.25),
                 vz=-speed_kmh * 0.04,
                 size=random.uniform(2.0, 3.5),
-                alpha=0.40,
-                color=(170, 180, 190),
+                alpha=0.35,
+                color=(160, 170, 180),
                 life=0.0,
                 max_life=random.uniform(0.35, 0.7),
                 p_type="EXHAUST"
@@ -132,7 +137,7 @@ class TrajectoryPredictionFan:
 
 
 class TrafficVehicle:
-    """Dynamic traffic participant with IDM car-following and MOBIL lane changing."""
+    """Surrounding dynamic traffic participant with IDM car-following and MOBIL lane changing."""
 
     def __init__(
         self,
@@ -141,7 +146,7 @@ class TrafficVehicle:
         z_pos: float = 0.0,
         speed_kmh: float = 75.0,
         target_speed_kmh: float = 80.0,
-        color: tuple[int, int, int] = (215, 35, 35),
+        color: tuple[int, int, int] = (218, 35, 38), # Tesla Crimson Red
         width: float = 1.92,
         length: float = 4.80,
         height: float = 1.50,
@@ -162,20 +167,20 @@ class TrafficVehicle:
 
         # Refined IDM Parameters
         self.v0 = target_speed_kmh / 3.6
-        self.T = 1.2 # Refined safe headway (s)
-        self.a_max = 2.4 # Acceleration limit (m/s^2)
+        self.T = 1.2 # Safe time headway (s)
+        self.a_max = 2.4 # Maximum acceleration (m/s^2)
         self.b_comf = 3.0 # Comfortable deceleration (m/s^2)
-        self.s0 = 3.0 # Minimum standstill gap (m)
+        self.s0 = 3.0 # Standstill safe distance (m)
         self.delta_idm = 4.0
 
-        # Dynamics & Tighter Suspension Damping
+        # Dynamics & Suspension
         self.accel = 0.0
         self.is_braking = False
         self.blinker = "OFF"
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
 
-        # Quintic Polynomial Lane Change Spline
+        # Quintic Polynomial Spline
         self.is_changing_lane = False
         self.lc_progress = 0.0
         self.lc_duration = 2.8
@@ -240,9 +245,9 @@ class TrafficVehicle:
         p0, p1, p2 = (0.20, 0.70, 0.10) if self.blinker == "LEFT" else ((0.20, 0.10, 0.70) if self.blinker == "RIGHT" else (0.75, 0.125, 0.125))
 
         self.prediction_fan = [
-            {"label": "H0_KEEP", "prob": p0, "points": pts_h0, "color": (0, 230, 160)},
-            {"label": "H1_LEFT", "prob": p1, "points": pts_h1, "color": (0, 190, 245)},
-            {"label": "H2_RIGHT", "prob": p2, "points": pts_h2, "color": (245, 175, 25)},
+            {"label": "H0_KEEP", "prob": p0, "points": pts_h0, "color": (0, 212, 255)},
+            {"label": "H1_LEFT", "prob": p1, "points": pts_h1, "color": (0, 212, 255)},
+            {"label": "H2_RIGHT", "prob": p2, "points": pts_h2, "color": (255, 185, 30)},
         ]
 
     def update_v2x_telemetry(self, timestamp_ms: float = 0.0, time_ms: float = 0.0):
@@ -273,17 +278,16 @@ class TrafficVehicle:
         self.step(dt, leader_dist, leader_spd)
 
     def step(self, dt: float, leader_dist: float = None, leader_speed_mps: float = None):
-        # 1. Longitudinal Kinematics
         self.accel = self.compute_idm_accel(leader_dist, leader_speed_mps)
         new_speed_mps = max(5.0, self.speed_mps + self.accel * dt)
         self.speed_kmh = new_speed_mps * 3.6
         self.is_braking = self.accel < -1.2
 
-        # 2. Tighter Suspension Damping (Critical Damping Factor = 8.5)
+        # Tighter Critical Suspension Damping
         target_pitch = np.clip(self.accel * -0.75, -2.8, 2.8)
         self.pitch_deg += (target_pitch - self.pitch_deg) * 8.5 * dt
 
-        # 3. Quintic Polynomial Lane Change
+        # Quintic Polynomial Lane Change
         if self.is_changing_lane:
             self.lc_progress += dt / self.lc_duration
             if self.lc_progress >= 0.9999:
@@ -305,13 +309,12 @@ class TrafficVehicle:
         else:
             self.roll_deg *= 0.80
 
-        # 4. Predictions & Telemetry
         self.update_prediction_fan()
         self.update_v2x_telemetry()
 
 
 class EgoAutonomousVehicle:
-    """Ego Tesla Level 4 Autonomous Highway Pilot with tight damping & smooth G-filtering."""
+    """Ego Tesla Level 4 Autonomous Highway Pilot with Quintic Splines & Ackermann Steering."""
 
     def __init__(self):
         self.lane_idx = 0
@@ -342,7 +345,7 @@ class EgoAutonomousVehicle:
         self.lat_jerk_gs = 0.0
         self.last_lat_accel_g = 0.0
 
-        # Smoothed 5-Second Rolling G-Force Buffer
+        # Filtered G-Force History
         self.g_history: list[tuple[float, float]] = [(0.0, 0.0)] * 150
         self.smoothed_lat_g = 0.0
         self.smoothed_long_g = 0.0
@@ -399,11 +402,12 @@ class EgoAutonomousVehicle:
             self.state = "LANE_CHANGE_RIGHT"
 
     def step(self, dt: float):
-        # 1. Quintic Polynomial C2 Trajectory
+        # 1. 5th-Order Quintic Polynomial Lateral Trajectory
         if self.state in ("LANE_CHANGE_LEFT", "LANE_CHANGE_RIGHT"):
             self.lc_progress += dt / self.lc_duration
             t = min(1.0, self.lc_progress)
 
+            # Quintic Spline: x(tau) = x_0 + dx * (10tau^3 - 15tau^4 + 6tau^5)
             s = 10.0 * (t ** 3) - 15.0 * (t ** 4) + 6.0 * (t ** 5)
             s_dot = (30.0 * (t ** 2) - 60.0 * (t ** 3) + 30.0 * (t ** 4)) / self.lc_duration
             s_ddot = (60.0 * t - 180.0 * (t ** 2) + 120.0 * (t ** 3)) / (self.lc_duration ** 2)
@@ -424,7 +428,6 @@ class EgoAutonomousVehicle:
             self.lat_jerk_gs = (self.lat_accel_g - self.last_lat_accel_g) / max(0.001, dt)
             self.last_lat_accel_g = self.lat_accel_g
 
-            # Tighter roll damping
             target_roll = float(np.clip(-self.lat_accel_g * 3.8, -3.8, 3.8))
             self.roll_deg += (target_roll - self.roll_deg) * 8.5 * dt
 
@@ -448,11 +451,10 @@ class EgoAutonomousVehicle:
             self.lat_accel_g *= 0.80
             self.lat_jerk_gs = 0.0
 
-        # Pitch damping
         target_pitch = np.clip((self.accel_mps2 / 9.81) * -0.75, -2.5, 2.5)
         self.pitch_deg += (target_pitch - self.pitch_deg) * 8.5 * dt
 
-        # Exponential Moving Average (EMA) Filtered G-History
+        # EMA-Smoothed G-History
         raw_long_g = self.accel_mps2 / 9.81
         alpha_ema = 0.18
         self.smoothed_lat_g = (1 - alpha_ema) * self.smoothed_lat_g + alpha_ema * self.lat_accel_g
@@ -464,7 +466,7 @@ class EgoAutonomousVehicle:
 
 
 class HighwayTrafficEngine:
-    """Master Traffic Engine orchestrating IDM, MOBIL politeness, and dynamic particles."""
+    """Master Traffic Engine orchestrating IDM, MOBIL politeness (p=0.15), and dynamic particles."""
 
     def __init__(self):
         self.ego = EgoAutonomousVehicle()
@@ -486,7 +488,6 @@ class HighwayTrafficEngine:
     def randomize_scenario(self):
         self.traffic_vehicles.clear()
 
-        # Premium Automotive Metallic / Pearl Paint Colors (RGB)
         lead_car = TrafficVehicle(
             veh_id="LEAD_CAR_1",
             lane_idx=0,
@@ -572,6 +573,10 @@ class HighwayTrafficEngine:
         same_lane_leads.sort(key=lambda v: v.z)
         lead_car = same_lane_leads[0] if same_lane_leads else None
 
+        # MOBIL Politeness Factor p = 0.15
+        p_politeness = 0.15
+        d_a_threshold = 0.20 # m/s^2
+
         if self.ego.state == "LANE_KEEP":
             if lead_car and lead_car.z < 26.0 and lead_car.speed_kmh < self.ego.target_cruise_speed_kmh - 8.0:
                 self.ego.state = "CHECK_OVERTAKE"
@@ -616,8 +621,8 @@ class HighwayTrafficEngine:
     def _compute_idm_accel(self, v: float, v0: float, s: float = None, v_lead: float = None) -> float:
         a_max = 2.4
         b_comf = 3.0
-        T = 1.2 # Refined headway
-        s0 = 3.0
+        T = 1.2 # Refined safe headway
+        s0 = 3.0 # Minimum standstill gap
         delta = 4.0
 
         if s is not None and s > 0.0:
