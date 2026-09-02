@@ -12,8 +12,8 @@ Mathematical Models & Algorithms:
   3. 5th-Order Quintic Polynomial Lateral Trajectory:
      x(tau) = x_start + delta_x * (10*tau^3 - 15*tau^4 + 6*tau^5), tau in [0, 1]
   4. Two-Track Ackermann Steering Kinematics.
-  5. Hard Physical Collision Resolution:
-     - Impenetrable bounding box geometry buffers prevent vehicles from phasing through each other.
+  5. Hard Physical Collision & Penetration Resolution:
+     - Impenetrable bounding box geometry buffers in both longitudinal (Z) and lateral (X) axes.
 """
 
 import math
@@ -551,7 +551,6 @@ class HighwayTrafficEngine:
         leader_spd = None
         min_gap = 9999.0
 
-        # Check other traffic vehicles
         for other in self.traffic_vehicles:
             if other.id == veh.id:
                 continue
@@ -562,9 +561,8 @@ class HighwayTrafficEngine:
                     leader_dist = gap
                     leader_spd = other.speed_mps
 
-        # Check ego vehicle (ego is at x=self.ego.x, z=0.0)
         if abs(self.ego.x - veh.x) < 2.2 and 0.0 > veh.z:
-            gap = -veh.z # ego.z (0.0) - veh.z
+            gap = -veh.z
             if gap < min_gap:
                 min_gap = gap
                 leader_dist = gap
@@ -602,15 +600,12 @@ class HighwayTrafficEngine:
                 self.ego.speed_kmh = max(10.0, min(120.0, (self.ego.speed_mps + accel * dt) * 3.6))
 
         elif self.ego.state == "CHECK_OVERTAKE":
-            # Verify left passing lane (Lane -1, X = -3.75) is completely safe in both forward & rear directions
             left_traffic = [v for v in self.traffic_vehicles if abs(v.x - (-3.75)) < 1.9]
             is_left_safe = True
             for v in left_traffic:
-                # Blind spot & approaching buffer: -18m to +25m
                 if -18.0 < v.z < 25.0:
                     is_left_safe = False
                     break
-                # Rapidly closing vehicle from behind
                 if v.z <= -18.0 and (v.speed_mps - self.ego.speed_mps) > 4.0:
                     ttc = abs(v.z) / (v.speed_mps - self.ego.speed_mps)
                     if ttc < 3.5:
@@ -621,13 +616,11 @@ class HighwayTrafficEngine:
                 self.ego.initiate_lane_change(self.ego.lane_idx - 1)
                 self.log_event("MANEUVERING TO FAST LANE (-1) WITH LEFT BLINKER")
             else:
-                # Continue safe following in current lane while waiting for an open slot
                 accel = self._compute_idm_accel(self.ego.speed_mps, 70.0 / 3.6, lead_dist, lead_car.speed_mps if lead_car else 19.0)
                 self.ego.accel_mps2 = accel
                 self.ego.speed_kmh = max(10.0, (self.ego.speed_mps + accel * dt) * 3.6)
 
         elif self.ego.state in ("LANE_CHANGE_LEFT", "LANE_CHANGE_RIGHT"):
-            # During lane transition, follow any vehicle ahead in the target lane
             target_x = float(self.ego.target_lane_idx * 3.75)
             trans_lead, trans_dist = self._find_leader_for_ego(target_x)
             v_target = self.ego.overtake_cruise_speed_kmh / 3.6 if self.ego.target_lane_idx < 0 else self.ego.target_cruise_speed_kmh / 3.6
@@ -636,7 +629,6 @@ class HighwayTrafficEngine:
             self.ego.speed_kmh = max(10.0, min(120.0, (self.ego.speed_mps + accel * dt) * 3.6))
 
         elif self.ego.state == "OVERTAKING":
-            # While in fast lane, obey IDM following for any vehicle ahead in the fast lane
             fast_lead, fast_dist = self._find_leader_for_ego(-3.75)
             accel = self._compute_idm_accel(self.ego.speed_mps, self.ego.overtake_cruise_speed_kmh / 3.6, fast_dist, fast_lead.speed_mps if fast_lead else None)
             self.ego.accel_mps2 = accel
@@ -644,7 +636,6 @@ class HighwayTrafficEngine:
 
             target_veh = next((v for v in self.traffic_vehicles if v.id == self.ego.overtake_target_id), None)
             if target_veh and target_veh.z < -16.0:
-                # Check center lane (Lane 0) clearance
                 center_traffic = [v for v in self.traffic_vehicles if abs(v.x - 0.0) < 1.9]
                 is_center_safe = all(not (-14.0 < v.z < 22.0) for v in center_traffic)
                 if is_center_safe:
@@ -665,13 +656,6 @@ class HighwayTrafficEngine:
             # Update relative longitudinal position
             rel_v_mps = v.speed_mps - self.ego.speed_mps
             v.z += rel_v_mps * dt
-
-            # MOBIL Lane Changing for Traffic
-            if not v.is_changing_lane and random.random() < 0.005:
-                if v.model_type == "SPORTS" and v.lane_idx == 0:
-                    v.initiate_lane_change(-1)
-                elif v.model_type == "TRUCK" and v.lane_idx == 0:
-                    v.initiate_lane_change(1)
 
             # Staggered respawn with collision-free slot verification
             if v.z > 95.0:
@@ -696,7 +680,7 @@ class HighwayTrafficEngine:
 
     def _respawn_vehicle_safely(self, veh: TrafficVehicle, from_rear: bool):
         """Respawns a vehicle at a guaranteed collision-free gap."""
-        target_z = random.uniform(-40.0, -30.0) if from_rear else random.uniform(65.0, 80.0)
+        target_z = random.uniform(-42.0, -32.0) if from_rear else random.uniform(68.0, 82.0)
         target_lane = veh.lane_idx
 
         # Ensure no other vehicle is in this spawn zone
@@ -714,7 +698,6 @@ class HighwayTrafficEngine:
     def _enforce_collision_avoidance_and_penetration_resolution(self):
         """Impenetrable bounding box physics buffer: vehicles can NEVER intersect or pass through each other."""
         all_participants = []
-        # Ego representation
         all_participants.append({
             "id": "EGO",
             "x": self.ego.x,
@@ -745,31 +728,63 @@ class HighwayTrafficEngine:
 
                 lat_dist = abs(p1["x"] - p2["x"])
                 lat_thresh = (p1["width"] + p2["width"]) * 0.5 + 0.35
+                long_dist = p2["z"] - p1["z"]
+                min_long_sep = (p1["length"] + p2["length"]) * 0.5 + 1.2
 
-                if lat_dist < lat_thresh:
-                    long_dist = p2["z"] - p1["z"]
-                    min_sep = (p1["length"] + p2["length"]) * 0.5 + 1.2
-
-                    # Check penetration
-                    if abs(long_dist) < min_sep:
-                        # p2 is in front of p1
-                        if long_dist >= 0:
-                            rear = p1
-                            front = p2
+                # 1. Longitudinal Collision Resolution
+                if lat_dist < lat_thresh and abs(long_dist) < min_long_sep:
+                    overlap_z = min_long_sep - abs(long_dist)
+                    if p1["is_ego"]:
+                        if p2["z"] >= 0: # p2 is ahead of ego
+                            p2["ref"].z += (overlap_z + 0.2)
+                            p1["ref"].speed_kmh = max(10.0, min(p1["ref"].speed_kmh, p2["ref"].speed_kmh - 2.0))
+                            p1["ref"].is_braking = True
+                        else: # p2 is behind ego
+                            p2["ref"].z -= (overlap_z + 0.2)
+                            p2["ref"].speed_kmh = max(10.0, min(p2["ref"].speed_kmh, p1["ref"].speed_kmh - 2.0))
+                            p2["ref"].is_braking = True
+                    elif p2["is_ego"]:
+                        if p1["z"] >= 0: # p1 is ahead of ego
+                            p1["ref"].z += (overlap_z + 0.2)
+                            p2["ref"].speed_kmh = max(10.0, min(p2["ref"].speed_kmh, p1["ref"].speed_kmh - 2.0))
+                            p2["ref"].is_braking = True
+                        else: # p1 is behind ego
+                            p1["ref"].z -= (overlap_z + 0.2)
+                            p1["ref"].speed_kmh = max(10.0, min(p1["ref"].speed_kmh, p2["ref"].speed_kmh - 2.0))
+                            p1["ref"].is_braking = True
+                    else:
+                        if p1["z"] < p2["z"]:
+                            p1["ref"].z -= (overlap_z * 0.5 + 0.1)
+                            p2["ref"].z += (overlap_z * 0.5 + 0.1)
+                            p1["ref"].speed_kmh = max(10.0, min(p1["ref"].speed_kmh, p2["ref"].speed_kmh - 2.0))
                         else:
-                            rear = p2
-                            front = p1
+                            p2["ref"].z -= (overlap_z * 0.5 + 0.1)
+                            p1["ref"].z += (overlap_z * 0.5 + 0.1)
+                            p2["ref"].speed_kmh = max(10.0, min(p2["ref"].speed_kmh, p1["ref"].speed_kmh - 2.0))
 
-                        # Resolve penetration by separating rear vehicle
-                        overlap = min_sep - abs(long_dist)
-                        if rear["is_ego"]:
-                            # Ego cannot pass through front vehicle
-                            self.ego.speed_kmh = max(10.0, min(self.ego.speed_kmh, front["ref"].speed_kmh - 2.0))
-                            self.ego.is_braking = True
-                        else:
-                            rear["ref"].z -= (overlap + 0.1)
-                            rear["ref"].speed_kmh = max(10.0, min(rear["ref"].speed_kmh, front["speed_mps"] * 3.6 - 2.0))
-                            rear["ref"].is_braking = True
+                # 2. Lateral Collision Resolution (Side-swipe prevention during lane changes)
+                if abs(long_dist) < (min_long_sep * 0.85):
+                    min_lat_sep = (p1["width"] + p2["width"]) * 0.5 + 0.30
+                    if lat_dist < min_lat_sep:
+                        overlap_x = min_lat_sep - lat_dist
+                        if p1["is_ego"]:
+                            push = overlap_x + 0.05
+                            if p2["x"] > p1["x"]:
+                                p2["ref"].x += push * 0.5
+                                p1["ref"].x -= push * 0.5
+                            else:
+                                p2["ref"].x -= push * 0.5
+                                p1["ref"].x += push * 0.5
+                            p1["ref"].x = float(np.clip(p1["ref"].x, -5.8, 5.8))
+                        elif p2["is_ego"]:
+                            push = overlap_x + 0.05
+                            if p1["x"] > p2["x"]:
+                                p1["ref"].x += push * 0.5
+                                p2["ref"].x -= push * 0.5
+                            else:
+                                p1["ref"].x -= push * 0.5
+                                p2["ref"].x += push * 0.5
+                            p2["ref"].x = float(np.clip(p2["ref"].x, -5.8, 5.8))
 
     def _compute_idm_accel(self, v: float, v0: float, s: float = None, v_lead: float = None) -> float:
         a_max = 2.4

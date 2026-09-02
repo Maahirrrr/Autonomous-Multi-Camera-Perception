@@ -90,3 +90,10 @@ def settings_from_args(args: argparse.Namespace) -> Settings:
         log_level=args.log_level,
         show_fps=not args.no_fps_hud
     )
+
+
+def parse_args(argv: Optional[list[str]] = None) -> Settings:
+    """Convenience helper to parse command-line arguments and return Settings instance."""
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    return settings_from_args(args)

@@ -1,13 +1,14 @@
 """
-bev_transformer_engine.py — Tesla Level 4 BEV Transformer & Log-Odds Occupancy Engine
-======================================================================================
-Algorithms & Systems:
-  - 2D Probabilistic Log-Odds Occupancy Grid:
-      L_t(x, y) = lambda * L_{t-1}(x, y) + l_sensor(x, y) - l_0
-      Rendered with Tesla Cyan (#00E5FF), Green free space, and Red risk zones.
-  - Multi-Hypothesis 3-Second Trajectory Prediction Fans (H0, H1, H2) with Arrowheads.
-  - PyTorch CUDA GPU-Accelerated IPM Homography via torch.nn.functional.grid_sample (GPU Optional).
-  - Thermal-IR Ironbow Night Palette for FLIR heat signatures.
+bev_transformer_engine.py — Tesla Level 4 BEV Transformer & Top-Down Occupancy Engine
+=====================================================================================
+Features:
+  - Top-Down 360° Bird's-Eye View (BEV) Spatial World Model.
+  - Multi-Lane Dynamic Highway Geometry with Animated Lane Dividers.
+  - Distinct Top-Down Vehicle Footprints (Heavy Semi Truck Trailer+Cab, Sedans, Sports Coupe).
+  - 360° LiDAR Point Cloud Projection with Range Rings (15m, 30m, 50m).
+  - Tesla Cyan 5th-Order Quintic Trajectory Corridor.
+  - 4-Camera Perception Frustum Cones (Front, Flanks, Rear).
+  - Log-Odds Probabilistic Occupancy Grid Fusion.
 """
 
 import math
@@ -29,56 +30,45 @@ from lidar_3d_pointcloud_engine import BoundingBox3D
 
 class ProbabilisticOccupancyGrid:
     """2D Log-Odds Probabilistic Occupancy Grid with temporal decay."""
-    def __init__(self, grid_w_cells: int = 110, grid_h_cells: int = 130, cell_size_m: float = 0.45):
+    def __init__(self, grid_w_cells: int = 120, grid_h_cells: int = 150, cell_size_m: float = 0.40):
         self.w = grid_w_cells
         self.h = grid_h_cells
         self.cell_size = cell_size_m
         self.log_odds = np.zeros((self.h, self.w), dtype=np.float32)
         self.l_occ = 1.2
-        self.l_free = -0.6
-        self.decay_factor = 0.95
+        self.l_free = -0.5
+        self.decay_factor = 0.94
 
     def world_to_grid(self, x: float, z: float) -> tuple[int, int]:
         gx = int((x / self.cell_size) + self.w * 0.5)
-        gz = int((self.h * 0.70) - (z / self.cell_size))
+        gz = int((self.h * 0.65) - (z / self.cell_size))
         return gx, gz
 
     def update_with_points(self, point_cloud: np.ndarray, dynamic_objects: list):
         self.log_odds *= self.decay_factor
         if len(point_cloud) > 0:
-            for pt in point_cloud[::4]:
-                px, py, pz, _, _ = pt
+            for pt in point_cloud[::3]:
+                px, py, pz = pt[0], pt[1], pt[2]
                 gx, gz = self.world_to_grid(px, pz)
                 if 0 <= gx < self.w and 0 <= gz < self.h:
                     if py >= 0.28:
-                        self.log_odds[gz, gx] = min(6.0, self.log_odds[gz, gx] + self.l_occ)
+                        self.log_odds[gz, gx] = min(5.0, self.log_odds[gz, gx] + self.l_occ)
                     else:
-                        self.log_odds[gz, gx] = max(-6.0, self.log_odds[gz, gx] + self.l_free)
+                        self.log_odds[gz, gx] = max(-5.0, self.log_odds[gz, gx] + self.l_free)
 
     def generate_heatmap_rgb(self, out_w: int, out_h: int, is_thermal: bool = False) -> np.ndarray:
         probs = 1.0 / (1.0 + np.exp(-self.log_odds))
         heat_img = np.zeros((self.h, self.w, 3), dtype=np.uint8)
 
-        if is_thermal:
-            for y in range(self.h):
-                for x in range(self.w):
-                    p = probs[y, x]
-                    if p > 0.60:
-                        heat_img[y, x] = (40, int(180 * p), 255)
-                    elif p < 0.40:
-                        heat_img[y, x] = (int(60 * (1.0 - p)), 20, 15)
-                    else:
-                        heat_img[y, x] = (24, 20, 18)
-        else:
-            for y in range(self.h):
-                for x in range(self.w):
-                    p = probs[y, x]
-                    if p > 0.60:
-                        heat_img[y, x] = (30, 30, int(235 * p))
-                    elif p < 0.40:
-                        heat_img[y, x] = (35, int(150 * (1.0 - p)), 20)
-                    else:
-                        heat_img[y, x] = (14, 14, 18)
+        for y in range(self.h):
+            for x in range(self.w):
+                p = probs[y, x]
+                if p > 0.65:
+                    heat_img[y, x] = (int(30 * p), int(30 * p), int(220 * p))
+                elif p < 0.35:
+                    heat_img[y, x] = (12, int(60 * (1.0 - p)), 16)
+                else:
+                    heat_img[y, x] = (8, 10, 14)
 
         return cv2.resize(heat_img, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
@@ -86,13 +76,13 @@ class ProbabilisticOccupancyGrid:
 class MultiCameraBEVTransformer:
     """Inverse Perspective Mapping & Spatial Fusion with Optional PyTorch CUDA Acceleration."""
 
-    def __init__(self, bev_width_px: int = 440, bev_height_px: int = 480, x_range_m: float = 15.0, z_range_m: float = 30.0):
+    def __init__(self, bev_width_px: int = 376, bev_height_px: int = 456, x_range_m: float = 14.0, z_range_m: float = 65.0):
         self.w = bev_width_px
         self.h = bev_height_px
         self.x_range = x_range_m
         self.z_range = z_range_m
         self.px_per_m_x = (self.w * 0.5) / self.x_range
-        self.px_per_m_z = (self.h * 0.70) / self.z_range
+        self.px_per_m_z = (self.h * 0.65) / self.z_range
 
         self.occupancy_grid = ProbabilisticOccupancyGrid()
         if TORCH_AVAILABLE:
@@ -135,7 +125,7 @@ class MultiCameraBEVTransformer:
 
     def world_to_bev(self, x_m: float, z_m: float) -> tuple[int, int]:
         u = int(self.w * 0.5 + x_m * self.px_per_m_x)
-        v = int(self.h * 0.70 - z_m * self.px_per_m_z)
+        v = int(self.h * 0.68 - z_m * self.px_per_m_z)
         return u, v
 
     def render_bev_fusion_map(
@@ -148,8 +138,12 @@ class MultiCameraBEVTransformer:
         frame_idx: int = 0,
         traffic_vehicles: list = None,
         is_thermal_night: bool = False,
-        is_wet_rain: bool = False
+        is_wet_rain: bool = False,
+        ego_ref = None
     ) -> np.ndarray:
+        if traffic_vehicles is None:
+            traffic_vehicles = []
+
         dynamic_objs = [(b.cx, b.cz, b.dx, b.dz, b.label, None) for b in bounding_boxes]
         self.occupancy_grid.update_with_points(point_cloud, dynamic_objs)
 
@@ -159,108 +153,178 @@ class MultiCameraBEVTransformer:
             dummy_b = torch.zeros((1, 3, self.h, self.w), device=self.device, dtype=torch.float32)
             self.benchmark_gpu_ipm_homography(dummy_b)
 
-        # 1. 3-Lane Highway Geometry
-        lane_col = (245, 245, 250)
+        # -------------------------------------------------------------
+        # 1. 3-LANE HIGHWAY ROAD SURFACE & DIVIDERS
+        # -------------------------------------------------------------
+        lane_col = (230, 235, 245)
         yellow_divider = (30, 205, 255)
 
+        # Road Asphalt Bed
+        u_l_edge, _ = self.world_to_bev(-6.2, 0.0)
+        u_r_edge, _ = self.world_to_bev(6.2, 0.0)
+        if 0 <= u_l_edge < self.w and 0 <= u_r_edge < self.w:
+            cv2.rectangle(bev_canvas, (u_l_edge, 0), (u_r_edge, self.h), (18, 22, 28), -1)
+
+        # Left Solid Yellow Line (X = -5.8m)
         u_ly, _ = self.world_to_bev(-5.8, 0.0)
         if 0 <= u_ly < self.w:
             cv2.line(bev_canvas, (u_ly, 0), (u_ly, self.h), yellow_divider, 2, cv2.LINE_AA)
 
+        # Right Solid White Line (X = +5.8m)
         u_rw, _ = self.world_to_bev(5.8, 0.0)
         if 0 <= u_rw < self.w:
             cv2.line(bev_canvas, (u_rw, 0), (u_rw, self.h), lane_col, 2, cv2.LINE_AA)
 
+        # Dashed Lane Dividers (X = -1.875m and X = +1.875m)
+        z_offset = (frame_idx * (ego_speed_kmh * 0.08)) % 8.0
         for lane_x in (-1.875, 1.875):
             u_d, _ = self.world_to_bev(lane_x, 0.0)
             if 0 <= u_d < self.w:
-                for y_d in range(0, self.h, 24):
-                    cv2.line(bev_canvas, (u_d, y_d), (u_d, y_d + 14), lane_col, 2, cv2.LINE_AA)
+                for z_dash in np.arange(-30.0 + z_offset, 70.0, 8.0):
+                    _, v_d1 = self.world_to_bev(lane_x, z_dash)
+                    _, v_d2 = self.world_to_bev(lane_x, z_dash + 3.8)
+                    if 0 <= v_d2 and v_d1 < self.h:
+                        cv2.line(bev_canvas, (u_d, max(0, v_d2)), (u_d, min(self.h, v_d1)), lane_col, 2, cv2.LINE_AA)
 
-        # 2. Metric Distance Rings & Ticks
-        cx_ego, cy_ego = int(self.w * 0.5), int(self.h * 0.70)
-        for dist_m in [10, 20, 30]:
+        # -------------------------------------------------------------
+        # 2. METRIC DISTANCE RANGE RINGS (15m, 30m, 50m)
+        # -------------------------------------------------------------
+        cx_ego, cy_ego = self.world_to_bev(0.0, 0.0)
+        for dist_m in [15, 30, 50]:
             r_px = int(dist_m * self.px_per_m_z)
-            cv2.circle(bev_canvas, (cx_ego, cy_ego), r_px, (45, 52, 65), 1, cv2.LINE_AA)
-            cv2.putText(bev_canvas, f"+{dist_m}m", (cx_ego - 16, cy_ego - r_px + 10),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.26, (0, 212, 255), 1, cv2.LINE_AA)
+            cv2.circle(bev_canvas, (cx_ego, cy_ego), r_px, (34, 42, 56), 1, cv2.LINE_AA)
+            cv2.putText(bev_canvas, f"+{dist_m}m", (cx_ego - 14, cy_ego - r_px - 4),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.25, (0, 212, 255), 1, cv2.LINE_AA)
 
-        # 3. 3D LiDAR Points
+        # -------------------------------------------------------------
+        # 3. 360° CAMERA FRUSTUM FOV CONES
+        # -------------------------------------------------------------
+        cone_overlay = bev_canvas.copy()
+        cv2.fillPoly(cone_overlay, [np.array([
+            (cx_ego, cy_ego),
+            (cx_ego - 130, cy_ego - 240),
+            (cx_ego + 130, cy_ego - 240)
+        ], dtype=np.int32)], (0, 180, 240))
+        cv2.fillPoly(cone_overlay, [np.array([
+            (cx_ego, cy_ego),
+            (cx_ego - 90, cy_ego + 140),
+            (cx_ego + 90, cy_ego + 140)
+        ], dtype=np.int32)], (0, 180, 240))
+        cv2.addWeighted(cone_overlay, 0.07, bev_canvas, 0.93, 0, bev_canvas)
+
+        # -------------------------------------------------------------
+        # 4. 3D LIDAR POINT CLOUD
+        # -------------------------------------------------------------
         if len(point_cloud) > 0:
             for pt in point_cloud[::2]:
-                px, py, pz, intensity, rng = pt
+                px, py, pz = pt[0], pt[1], pt[2]
+                intensity = pt[3] if len(pt) > 3 else 0.5
                 u, v = self.world_to_bev(px, pz)
                 if 0 <= u < self.w and 0 <= v < self.h:
                     if py >= 0.28:
-                        p_col = (255, 212, 0) if rng > 14.0 else (0, 212, 255)
-                        cv2.circle(bev_canvas, (u, v), 1, p_col, -1)
+                        cv2.circle(bev_canvas, (u, v), 1, (0, 229, 255), -1)
                     else:
-                        g_val = int(min(255, 160 * intensity))
-                        cv2.circle(bev_canvas, (u, v), 1, (int(g_val * 0.3), g_val, 0), -1)
+                        g_val = int(min(255, 120 * intensity + 30))
+                        cv2.circle(bev_canvas, (u, v), 1, (30, g_val, 40), -1)
 
-        # 4. Multi-Hypothesis Trajectory Fans
-        for bbox in bounding_boxes:
-            u_b, v_b = self.world_to_bev(bbox.cx, bbox.cz)
-            if 0 <= u_b < self.w and 0 <= v_b < self.h:
-                for angle_deg, f_col in [(-5, (180, 212, 0)), (0, (255, 212, 0)), (5, (180, 212, 0))]:
-                    rad = math.radians(angle_deg)
-                    pts_traj = []
-                    for seg in range(8):
-                        s_dist = 3.0 + seg * 1.8
-                        px = bbox.cx + s_dist * math.sin(rad)
-                        pz = bbox.cz + s_dist * math.cos(rad)
-                        su, sv = self.world_to_bev(px, pz)
-                        if 0 <= su < self.w and 0 <= sv < self.h:
-                            pts_traj.append((su, sv))
+        # -------------------------------------------------------------
+        # 5. TESLA CYAN TRAJECTORY CORRIDOR
+        # -------------------------------------------------------------
+        if ego_ref:
+            pts_traj = []
+            target_lane_x = float(ego_ref.target_lane_idx * 3.75)
+            for s in np.linspace(0.0, 32.0, 16):
+                ratio = min(1.0, s / 22.0)
+                cur_x = ego_ref.x + (target_lane_x - ego_ref.x) * (10.0 * ratio**3 - 15.0 * ratio**4 + 6.0 * ratio**5)
+                tu, tv = self.world_to_bev(cur_x, s)
+                if 0 <= tu < self.w and 0 <= tv < self.h:
+                    pts_traj.append((tu, tv))
+            if len(pts_traj) > 1:
+                cv2.polylines(bev_canvas, [np.array(pts_traj, dtype=np.int32)], False, (0, 229, 255), 2, cv2.LINE_AA)
 
-                    for k in range(0, len(pts_traj) - 1, 2):
-                        cv2.line(bev_canvas, pts_traj[k], pts_traj[k+1], f_col, 2, cv2.LINE_AA)
+        # -------------------------------------------------------------
+        # 6. DYNAMIC SURROUND VEHICLES (Top-Down Footprints & Badges)
+        # -------------------------------------------------------------
+        for v in traffic_vehicles:
+            hw = v.width * 0.5
+            hl = v.length * 0.5
+            x, z = v.x, v.z
 
-                    if len(pts_traj) > 1:
-                        cv2.circle(bev_canvas, pts_traj[-1], 2, f_col, -1)
+            u1, v1 = self.world_to_bev(x - hw, z + hl)
+            u2, v2 = self.world_to_bev(x + hw, z - hl)
 
-        # 5. TTC Risk Bounding Boxes
-        for bbox in bounding_boxes:
-            hw, hl = bbox.dx * 0.5, bbox.dz * 0.5
-            corners = [
-                (bbox.cx - hw, bbox.cz - hl),
-                (bbox.cx + hw, bbox.cz - hl),
-                (bbox.cx + hw, bbox.cz + hl),
-                (bbox.cx - hw, bbox.cz + hl),
-            ]
-            poly_pts = np.array([self.world_to_bev(cx, cz) for cx, cz in corners], dtype=np.int32)
+            if -40 < u1 < self.w + 40 and -40 < v1 < self.h + 40:
+                box_w = max(6, abs(u2 - u1))
+                box_h = max(8, abs(v2 - v1))
+                bx = min(u1, u2)
+                by = min(v1, v2)
 
-            ttc_est = max(0.5, bbox.cz / 8.0)
-            if ttc_est < 2.0:
-                risk_col = (48, 59, 255)
-            elif ttc_est < 4.0:
-                risk_col = (30, 185, 255)
-            else:
-                risk_col = (120, 210, 0)
+                v_bgr = (v.color[2], v.color[1], v.color[0]) if v.color else (38, 35, 218)
 
-            cv2.polylines(bev_canvas, [poly_pts], True, risk_col, 2, cv2.LINE_AA)
+                if v.model_type == "TRUCK":
+                    # Semi Truck: Trailer Box + Front Cab
+                    cv2.rectangle(bev_canvas, (bx, by), (bx + box_w, by + box_h), v_bgr, -1)
+                    cv2.rectangle(bev_canvas, (bx, by), (bx + box_w, by + box_h), (240, 245, 255), 1)
+                    cab_y = by + int(box_h * 0.25)
+                    cv2.line(bev_canvas, (bx, cab_y), (bx + box_w, cab_y), (15, 20, 30), 2)
+                    cv2.circle(bev_canvas, (bx + 2, by + 2), 2, (30, 185, 255), -1)
+                    cv2.circle(bev_canvas, (bx + box_w - 2, by + 2), 2, (30, 185, 255), -1)
 
-            u_c, v_c = self.world_to_bev(bbox.cx, bbox.cz)
-            if 0 <= u_c < self.w and 0 <= v_c < self.h:
-                cv2.putText(bev_canvas, f"{bbox.label} • {bbox.cz:.1f}m", (u_c - 35, v_c - 6),
-                            cv2.FONT_HERSHEY_DUPLEX, 0.26, (240, 245, 255), 1, cv2.LINE_AA)
+                elif v.model_type == "SPORTS":
+                    # Sports Coupe: Sleek body + rear spoiler
+                    cv2.rectangle(bev_canvas, (bx, by), (bx + box_w, by + box_h), v_bgr, -1)
+                    cv2.rectangle(bev_canvas, (bx, by), (bx + box_w, by + box_h), (240, 245, 255), 1)
+                    cv2.line(bev_canvas, (bx - 2, by + box_h - 2), (bx + box_w + 2, by + box_h - 2), (245, 245, 250), 2)
 
-        # 6. Ego Tesla Vehicle Avatar
-        u_ego, v_ego = cx_ego, cy_ego
-        hw_e, hl_e = int(1.95 * 0.5 * self.px_per_m_x), int(4.75 * 0.5 * self.px_per_m_z)
+                else:
+                    # Sedan: Standard footprint + windshield
+                    cv2.rectangle(bev_canvas, (bx, by), (bx + box_w, by + box_h), v_bgr, -1)
+                    cv2.rectangle(bev_canvas, (bx, by), (bx + box_w, by + box_h), (240, 245, 255), 1)
+                    ws_y1 = by + int(box_h * 0.28)
+                    ws_y2 = by + int(box_h * 0.48)
+                    cv2.rectangle(bev_canvas, (bx + 2, ws_y1), (bx + box_w - 2, ws_y2), (45, 55, 75), -1)
 
-        hl_cone = bev_canvas.copy()
-        for offset_x in (-hw_e + 2, hw_e - 2):
-            c_poly = np.array([
-                [u_ego + offset_x, v_ego - hl_e],
-                [u_ego + offset_x - 30, v_ego - hl_e - 90],
-                [u_ego + offset_x + 30, v_ego - hl_e - 90]
-            ], dtype=np.int32)
-            cv2.fillPoly(hl_cone, [c_poly], (255, 235, 220))
-        cv2.addWeighted(hl_cone, 0.10, bev_canvas, 0.90, 0, bev_canvas)
+                # Taillights (Red)
+                cv2.circle(bev_canvas, (bx + 2, by + box_h - 2), 2, (35, 35, 255), -1)
+                cv2.circle(bev_canvas, (bx + box_w - 2, by + box_h - 2), 2, (35, 35, 255), -1)
 
-        cv2.rectangle(bev_canvas, (u_ego - hw_e, v_ego - hl_e + 4), (u_ego + hw_e, v_ego + hl_e), (255, 212, 0), 2, cv2.LINE_AA)
-        cv2.line(bev_canvas, (u_ego, v_ego - hl_e), (u_ego, v_ego - hl_e - 12), (0, 212, 255), 2, cv2.LINE_AA)
+                # Velocity vector arrow
+                arrow_len = int(v.speed_mps * 0.6)
+                cv2.arrowedLine(bev_canvas, (bx + box_w // 2, by), (bx + box_w // 2, by - arrow_len), (0, 229, 255), 1, tipLength=0.3)
+
+                # Distance & Type Tag
+                tag_str = f"[{v.model_type}] {z:+.0f}m"
+                tag_x = max(4, min(self.w - 85, bx - 10))
+                tag_y = max(14, by - 6)
+                cv2.putText(bev_canvas, tag_str, (tag_x, tag_y),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.25, (220, 235, 255), 1, cv2.LINE_AA)
+
+        # -------------------------------------------------------------
+        # 7. EGO HERO TESLA MODEL S AVATAR
+        # -------------------------------------------------------------
+        ego_x_val = ego_ref.x if ego_ref else 0.0
+        u_e, v_e = self.world_to_bev(ego_x_val, 0.0)
+        hw_e = int(1.96 * 0.5 * self.px_per_m_x)
+        hl_e = int(4.97 * 0.5 * self.px_per_m_z)
+
+        # Deep Metallic Blue Body
+        cv2.rectangle(bev_canvas, (u_e - hw_e, v_e - hl_e), (u_e + hw_e, v_e + hl_e), (85, 44, 16), -1)
+        cv2.rectangle(bev_canvas, (u_e - hw_e, v_e - hl_e), (u_e + hw_e, v_e + hl_e), (0, 229, 255), 2)
+
+        # Panoramic Glass Roof
+        ws_top = v_e - int(hl_e * 0.50)
+        ws_bot = v_e + int(hl_e * 0.40)
+        cv2.rectangle(bev_canvas, (u_e - hw_e + 2, ws_top), (u_e + hw_e - 2, ws_bot), (120, 65, 28), -1)
+
+        # Front Headlights
+        cv2.circle(bev_canvas, (u_e - hw_e + 2, v_e - hl_e + 2), 2, (255, 240, 220), -1)
+        cv2.circle(bev_canvas, (u_e + hw_e - 2, v_e - hl_e + 2), 2, (255, 240, 220), -1)
+
+        # Rear LED Taillight Bar
+        cv2.line(bev_canvas, (u_e - hw_e + 2, v_e + hl_e - 2), (u_e + hw_e - 2, v_e + hl_e - 2), (30, 30, 255), 2)
+
+        # Heading Indicator
+        cv2.arrowedLine(bev_canvas, (u_e, v_e - hl_e), (u_e, v_e - hl_e - 16), (0, 229, 255), 2, tipLength=0.35)
 
         return bev_canvas
 
@@ -270,11 +334,15 @@ class MultiCameraBEVTransformer:
         point_cloud: np.ndarray,
         bounding_boxes: list[BoundingBox3D],
         ego_speed_kmh: float = 75.0,
-        render_lidar: bool = True
+        render_lidar: bool = True,
+        traffic_vehicles: list = None,
+        ego_ref = None
     ) -> np.ndarray:
         return self.render_bev_fusion_map(
             camera_images=camera_images,
             point_cloud=point_cloud if render_lidar else np.zeros((0, 5)),
             bounding_boxes=bounding_boxes,
-            ego_speed_kmh=ego_speed_kmh
+            ego_speed_kmh=ego_speed_kmh,
+            traffic_vehicles=traffic_vehicles,
+            ego_ref=ego_ref
         )

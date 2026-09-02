@@ -1,64 +1,41 @@
 """
-run_bev_surround.py — Tesla Level 4 Autonomous Vehicle 360° Spatial Perception Cockpit
+run_bev_surround.py — Production Tesla Level 4 Perception Cockpit (Apple-Tesla Edition)
 ======================================================================================
-Features:
-  - Apple-Tesla Frosted Obsidian Glass (#08090C) + Tesla Cyan (#00E5FF) & Red (#FF334B).
-  - High-Performance Vectorized Perception Pipeline Locked at 60.0 FPS.
-  - Multi-Camera Surround Array (Front 1080p, Left/Right 85° Flanks, Rearview Mirror).
-  - Authentic 3D Digital Twin Visualizer with Collision-Free Stacking Frosted Pills.
-  - 77GHz Polar Radar FMCW Sweep, 64-Beam LiDAR, V2X BSM & Categorized Event Streams.
+Layout:
+  - Header: FPS Hud, ASIL-D status, Weather/Lighting selector, L4 Pilot Mode indicator.
+  - Top Row: 3 Flank/Front Surround Cameras (LEFT, FRONT, RIGHT).
+  - Middle Row:
+      * Left   : Vehicle Kinematics, Monospace Speedometer, G-Force History & Steering.
+      * Center : 3D Digital Twin Simulation (Interactive mouse orbit).
+      * Right  : Top-Down BEV Perception & 360° Occupancy Window.
+  - Bottom Row:
+      * Left   : ADAS Safety & FCW Intelligence.
+      * Center : Rear Mirror / 1080p Digital Rearview Camera.
+      * Right  : Mission & Event Log Stream.
 """
 
-import sys
-import os
-import time
 import math
-import random
+import sys
 import logging
+import random
 import numpy as np
-import cv2
 import pygame
+import cv2
 
 import config as cfg
 import ui_widgets as ui
-from bev_transformer_engine import MultiCameraBEVTransformer
-from multi_cam_simulator import MultiCameraSimulator
-from lidar_3d_pointcloud_engine import Lidar3DPerceptionEngine
 from traffic_physics_simulator import HighwayTrafficEngine
+from lidar_3d_pointcloud_engine import Lidar3DPerceptionEngine
+from multi_cam_simulator import MultiCameraSimulator
+from bev_transformer_engine import MultiCameraBEVTransformer
 from digital_twin_3d_renderer import DigitalTwin3DRenderer
 
-log = logging.getLogger("l4_cockpit")
+logging.basicConfig(level=logging.INFO, format="[%(levelname)s] %(message)s")
+log = logging.getLogger("Cockpit")
 
 
-def get_crisp_mono_font(size: int, bold: bool = True) -> pygame.font.Font:
-    """Returns a crisp monospace font for high-precision telemetry."""
-    for font_name in ["consolas", "cascadiacode", "sfmono", "lucidaconsole", "couriernew", "segoeui"]:
-        try:
-            f = pygame.font.SysFont(font_name, size, bold=bold)
-            if f:
-                return f
-        except Exception:
-            continue
-    return pygame.font.Font(None, size)
-
-
-def get_crisp_ui_font(size: int, bold: bool = True) -> pygame.font.Font:
-    """Returns a crisp modern UI font for titles and badges."""
-    for font_name in ["segoeui", "sfprodisplay", "calibri", "arial", "consolas"]:
-        try:
-            f = pygame.font.SysFont(font_name, size, bold=bold)
-            if f:
-                return f
-        except Exception:
-            continue
-    return pygame.font.Font(None, size)
-
-
-def main():
-    args = cfg.build_arg_parser().parse_args()
-    settings = cfg.settings_from_args(args)
-
-    logging.basicConfig(level=getattr(logging, settings.log_level), format="[%(levelname)s] %(message)s")
+def main(argv: list[str] | None = None) -> None:
+    settings = cfg.parse_args(argv)
 
     if settings.seed is not None:
         random.seed(settings.seed)
@@ -66,37 +43,25 @@ def main():
         log.info(f"Reproducible run: random seed = {settings.seed}")
 
     pygame.init()
-    screen_w, screen_h = cfg.LOGICAL_WIDTH, cfg.LOGICAL_HEIGHT
-    pygame.display.set_caption("Tesla Level 4 Autonomous 360° Perception Cockpit • Apple-Tesla Design DNA")
+    pygame.font.init()
 
-    display_flags = pygame.DOUBLEBUF | pygame.SCALED
-    if settings.fullscreen:
-        display_flags |= pygame.FULLSCREEN
-
-    window_size = (settings.width, settings.height)
-    try:
-        screen = pygame.display.set_mode(window_size, display_flags, vsync=1)
-    except Exception as exc:
-        log.warning(f"SCALED display mode unavailable ({exc}); falling back to standard window")
-        try:
-            screen = pygame.display.set_mode((screen_w, screen_h), pygame.DOUBLEBUF | pygame.HWSURFACE)
-        except Exception:
-            screen = pygame.display.set_mode((screen_w, screen_h), pygame.DOUBLEBUF)
-
+    screen_w, screen_h = settings.width, settings.height
+    screen = pygame.display.set_mode((screen_w, screen_h), pygame.DOUBLEBUF | pygame.HWSURFACE)
+    pygame.display.set_caption("Tesla Level 4 — 360° Multi-Camera & BEV Perception Cockpit")
     clock = pygame.time.Clock()
 
-    # Razor-Sharp Typography Hierarchy
-    font_mono_xs = get_crisp_mono_font(11, bold=False)
-    font_mono_sm = get_crisp_mono_font(12, bold=True)
-    font_mono_md = get_crisp_mono_font(14, bold=True)
-    font_mono_lg = get_crisp_mono_font(20, bold=True)
-    font_mono_spd = get_crisp_mono_font(32, bold=True)
-    font_mono_ttc = get_crisp_mono_font(24, bold=True)
+    # Monospace Typography Hierarchy
+    font_ui_title = pygame.font.SysFont("consolas", 13, bold=True)
+    font_mono_xs  = pygame.font.SysFont("consolas", 11, bold=True)
+    font_mono_sm  = pygame.font.SysFont("consolas", 13, bold=True)
+    font_mono_lg  = pygame.font.SysFont("consolas", 22, bold=True)
+    font_mono_spd = pygame.font.SysFont("consolas", 36, bold=True)
+    font_mono_ttc = pygame.font.SysFont("consolas", 20, bold=True)
 
-    font_ui_title = get_crisp_ui_font(13, bold=True)
+    # Subsystem Initialization
+    bev_w, bev_h = 376, 456
+    twin_w, twin_h = 436, 456
 
-    # 1. Initialize High-Speed Engines
-    bev_w, bev_h = 440, 460
     bev_engine = MultiCameraBEVTransformer(bev_width_px=bev_w, bev_height_px=bev_h)
 
     cam_w_flank, cam_h_flank = 380, 135
@@ -105,13 +70,8 @@ def main():
     cam_sim_center = MultiCameraSimulator(width=cam_w_center, height=cam_h_center)
 
     lidar_engine = Lidar3DPerceptionEngine(num_lasers=64, max_range_m=65.0)
-    lidar_engine.cameras = bev_engine.cameras
-
     traffic_engine = HighwayTrafficEngine()
-    twin_renderer = DigitalTwin3DRenderer(screen_w=bev_w, screen_h=bev_h)
-
-    radar_history = []
-    radar_sweep_trail = []
+    twin_renderer = DigitalTwin3DRenderer(screen_w=440, screen_h=460)
 
     log.info("=" * 78)
     log.info("TESLA LEVEL 4 AUTONOMOUS PERCEPTION COCKPIT (APPLE-TESLA EDITION)")
@@ -148,7 +108,7 @@ def main():
     COLOR_APPLE_AMBER = cfg.COLOR_APPLE_AMBER
 
     # Pre-allocated Surfaces for 60 FPS Blitting
-    twin_surf = pygame.Surface((bev_w - 4, bev_h - 4))
+    twin_surf = pygame.Surface((twin_w, twin_h))
     area_surf = pygame.Surface((380, 460), pygame.SRCALPHA)
 
     fps_rolling = 60.0
@@ -180,9 +140,9 @@ def main():
                     traffic_engine.ego.manual_override = not traffic_engine.ego.manual_override
                     traffic_engine.log_event(f"PILOT -> {'MANUAL OVERRIDE' if traffic_engine.ego.manual_override else 'AUTONOMOUS HIGHWAY PILOT'}")
                 elif event.key == pygame.K_a:
-                    traffic_engine.ego.initiate_lane_change(max(-1, traffic_engine.ego.lane_idx - 1))
+                    traffic_engine.ego.initiate_lane_change(max(-1, traffic_engine.ego.lane_idx - 1), traffic_engine.traffic_vehicles)
                 elif event.key == pygame.K_d:
-                    traffic_engine.ego.initiate_lane_change(min(1, traffic_engine.ego.lane_idx + 1))
+                    traffic_engine.ego.initiate_lane_change(min(1, traffic_engine.ego.lane_idx + 1), traffic_engine.traffic_vehicles)
 
             twin_renderer.handle_mouse_orbit(event, rect_offset=(420, 180))
 
@@ -191,7 +151,7 @@ def main():
             if keys[pygame.K_w]:
                 traffic_engine.ego.speed_kmh = min(135.0, traffic_engine.ego.speed_kmh + 24.0 * dt)
             if keys[pygame.K_s]:
-                traffic_engine.ego.speed_kmh = max(20.0, traffic_engine.ego.speed_kmh - 35.0 * dt)
+                traffic_engine.ego.speed_kmh = max(10.0, traffic_engine.ego.speed_kmh - 35.0 * dt)
                 traffic_engine.ego.is_braking = True
             else:
                 traffic_engine.ego.is_braking = False
@@ -205,7 +165,7 @@ def main():
         dynamic_objects = traffic_engine.get_dynamic_objects_for_sensors()
 
         point_cloud = lidar_engine.generate_scene_point_cloud(dynamic_objects, {}, frame_count)
-        radar_detections = lidar_engine.radar_sim.scan_targets(dynamic_objects, ego.speed_mps)
+        _, _, bounding_boxes = lidar_engine.segment_ground_and_clusters(point_cloud, dynamic_objects)
 
         # Flank Cameras
         cam_frames_flank = cam_sim_flank.render_surround_views(
@@ -426,56 +386,47 @@ def main():
         screen.blit(font_mono_xs.render("3D DIGITAL TWIN | 3-LANE SIM", True, COLOR_TESLA_CYAN), (440, 195))
 
         # -------------------------------------------------------------
-        # 7. MIDDLE ROW — RIGHT PANEL: 77GHz RADAR & V2X HUD
+        # 7. MIDDLE ROW — RIGHT PANEL: TOP-DOWN BEV PERCEPTION WINDOW
         # -------------------------------------------------------------
         right_panel_rect = pygame.Rect(880, 180, 380, 460)
         ui.draw_glass_panel(screen, right_panel_rect, border_radius=6)
 
-        screen.blit(font_ui_title.render("77GHz RADAR & V2X TELEMETRY", True, COLOR_TESLA_CYAN), (895, 192))
+        bev_img = bev_engine.render_bev_fusion_map(
+            camera_images=cam_frames_center,
+            point_cloud=point_cloud,
+            bounding_boxes=bounding_boxes,
+            ego_speed_kmh=ego.speed_kmh,
+            ego_yaw_rate=ego.yaw_rate_rads,
+            frame_idx=frame_count,
+            traffic_vehicles=traffic,
+            is_thermal_night=night_mode,
+            is_wet_rain=(current_weather == "RAIN"),
+            ego_ref=ego
+        )
 
-        # 77GHz POLAR RADAR SCOPE
-        rcx, rcy = 1080, 298
-        rad_r = 62
-        pygame.draw.circle(screen, (8, 16, 12), (rcx, rcy), rad_r)
-        pygame.draw.circle(screen, (0, 160, 75), (rcx, rcy), rad_r, 1)
+        surf_bev = pygame.surfarray.make_surface(np.transpose(bev_img, (1, 0, 2)))
+        screen.blit(surf_bev, (882, 182))
 
-        for ring_f, r_lbl in [(0.33, "20m"), (0.66, "45m"), (1.00, "70m")]:
-            rr_px = int(rad_r * ring_f)
-            pygame.draw.circle(screen, (0, 50, 25), (rcx, rcy), rr_px, 1)
-            screen.blit(font_mono_xs.render(r_lbl, True, (0, 130, 60)), (rcx + rr_px - 18, rcy + 2))
+        # Top Header Badge
+        pygame.draw.rect(screen, COLOR_CARD_BG, pygame.Rect(890, 190, 250, 24), border_radius=4)
+        pygame.draw.rect(screen, COLOR_BORDER_THIN, pygame.Rect(890, 190, 250, 24), 1, border_radius=4)
+        screen.blit(font_mono_xs.render("TOP-DOWN BEV | 360° OCCUPANCY", True, COLOR_TESLA_CYAN), (898, 195))
 
-        screen.blit(font_mono_xs.render("0 deg", True, (0, 160, 75)), (rcx - 14, rcy - rad_r - 12))
-        screen.blit(font_mono_xs.render("+30 deg", True, (0, 160, 75)), (rcx + rad_r - 8, rcy - 14))
-        screen.blit(font_mono_xs.render("-30 deg", True, (0, 160, 75)), (rcx - rad_r - 28, rcy - 14))
+        # Point Count Badge
+        pts_badge_rect = pygame.Rect(1148, 190, 102, 24)
+        pygame.draw.rect(screen, COLOR_CARD_BG, pts_badge_rect, border_radius=4)
+        pygame.draw.rect(screen, COLOR_BORDER_THIN, pts_badge_rect, 1, border_radius=4)
+        screen.blit(font_mono_xs.render(f"PTS: {len(point_cloud):,}", True, COLOR_APPLE_GREEN), (1154, 195))
 
-        sweep_deg = (frame_count * 4) % 360
-        radar_sweep_trail.append(sweep_deg)
-        if len(radar_sweep_trail) > 10:
-            radar_sweep_trail.pop(0)
+        # Bottom Sensor Status Bar
+        bot_bar_rect = pygame.Rect(890, 608, 360, 22)
+        pygame.draw.rect(screen, (10, 14, 20), bot_bar_rect, border_radius=3)
+        pygame.draw.rect(screen, COLOR_BORDER_THIN, bot_bar_rect, 1, border_radius=3)
+        screen.blit(font_mono_xs.render("LOG-ODDS OCCUPANCY GRID [65m | 360° FUSION]", True, COLOR_APPLE_GREEN), (898, 612))
 
-        for trail_i, trail_deg in enumerate(radar_sweep_trail):
-            trail_t = (trail_i + 1) / len(radar_sweep_trail)
-            tr_rad = math.radians(trail_deg)
-            tr_col = (int(0 * trail_t), int(240 * trail_t), int(95 * trail_t))
-            pygame.draw.line(screen, tr_col, (rcx, rcy),
-                             (rcx + int(rad_r * math.cos(tr_rad)), rcy - int(rad_r * math.sin(tr_rad))),
-                             2 if trail_i == len(radar_sweep_trail) - 1 else 1)
-
-        for r_det in radar_detections:
-            rx = rcx + int(r_det.x * 2.5)
-            ry = rcy - int(r_det.z * 0.80)
-            if math.hypot(rx - rcx, ry - rcy) <= rad_r - 2:
-                pygame.draw.circle(screen, (0, 255, 110), (rx, ry), 3)
-                d_arrow = int(r_det.doppler_mps * 1.4)
-                pygame.draw.line(screen, (0, 225, 185), (rx, ry), (rx, ry - d_arrow), 2)
-                screen.blit(font_mono_xs.render(f"{r_det.range_m:.0f}m", True, COLOR_TEXT_MAIN), (rx + 5, ry - 6))
-
-        # LiDAR Count
-        screen.blit(font_mono_lg.render(f"{len(point_cloud):,}", True, COLOR_TEXT_MAIN), (895, 235))
-        screen.blit(font_mono_xs.render("64-BEAM HESAI", True, COLOR_TESLA_CYAN), (895, 258))
-        screen.blit(font_mono_xs.render("RATE: 20 Hz", True, COLOR_TEXT_MUTED), (895, 274))
-
-        # Lead Car TTC Evaluation
+        # -------------------------------------------------------------
+        # 8. BOTTOM ROW: REAR MIRROR (CENTER), ADAS FCW (LEFT), LOG (RIGHT)
+        # -------------------------------------------------------------
         lead_car = next((v for v in traffic if abs(v.x - ego.x) < 2.0 and v.z > 0), None)
         if lead_car:
             ttc_val = lead_car.z / max(0.5, (ego.speed_mps - lead_car.speed_mps))
@@ -484,41 +435,6 @@ def main():
             ttc_val = 99.0
             ttc_col = COLOR_APPLE_GREEN
 
-        # LIVE TIME-TO-COLLISION 10-SEGMENT COUNTDOWN BAR
-        screen.blit(font_mono_xs.render("TIME TO COLLISION (TTC)", True, COLOR_TEXT_MUTED), (895, 356))
-        ttc_num_str = f"{ttc_val:.1f}s" if ttc_val < 50 else "--.-s"
-        screen.blit(font_mono_ttc.render(ttc_num_str, True, ttc_col), (1175, 348))
-
-        seg_active = max(0, min(10, int((ttc_val / 6.0) * 10)))
-        for seg_i in range(10):
-            seg_x = 895 + seg_i * 35
-            seg_c = ttc_col if seg_i < seg_active else (24, 28, 38)
-            pygame.draw.rect(screen, seg_c, pygame.Rect(seg_x, 376, 32, 12), border_radius=2)
-
-        # V2X DSRC / C-V2X BSM CARD
-        v2x_pkt = traffic_engine.get_lead_v2x_packet()
-        v2x_box = pygame.Rect(895, 404, 350, 75)
-        pygame.draw.rect(screen, COLOR_CARD_BG, v2x_box, border_radius=4)
-        pygame.draw.rect(screen, COLOR_BORDER_THIN, v2x_box, 1, border_radius=4)
-
-        pkt_flash = "+1 PKT" if (frame_count % 30 < 15) else "SYNC"
-        screen.blit(font_mono_xs.render(f"V2X BSM PACKET [{pkt_flash}]", True, COLOR_TESLA_CYAN), (905, 410))
-
-        if v2x_pkt:
-            b_col = COLOR_TESLA_RED if v2x_pkt.brake_pct > 10 else COLOR_APPLE_GREEN
-            screen.blit(font_mono_xs.render(f"LEAD SPEED: {v2x_pkt.speed_kmh:.0f} km/h", True, COLOR_TEXT_MAIN), (905, 428))
-            screen.blit(font_mono_xs.render(f"LEAD BRAKE: {'ON' if v2x_pkt.brake_pct > 10 else 'OFF'}", True, b_col), (1060, 428))
-            screen.blit(font_mono_xs.render(f"LEAD BLINKER: {v2x_pkt.turn_signal}", True, COLOR_APPLE_AMBER), (905, 446))
-            screen.blit(font_mono_xs.render(f"DSRC LATENCY: {random.randint(2, 5)}ms", True, COLOR_APPLE_GREEN), (1060, 446))
-        else:
-            screen.blit(font_mono_xs.render("LEAD SPEED: 68 km/h | LEAD BRAKE: OFF", True, COLOR_TEXT_MAIN), (905, 428))
-            screen.blit(font_mono_xs.render("LEAD BLINKER: OFF  | DSRC LATENCY: 3ms", True, COLOR_APPLE_GREEN), (905, 446))
-
-        screen.blit(font_mono_xs.render("SENSORS: 4-CAM HDR [LOCKED] | 64-LIDAR [20Hz] | RADAR [OK]", True, COLOR_APPLE_GREEN), (895, 498))
-
-        # -------------------------------------------------------------
-        # 8. BOTTOM ROW: REAR MIRROR (CENTER), ADAS FCW (LEFT), LOG (RIGHT)
-        # -------------------------------------------------------------
         # BOTTOM-LEFT: ADAS FCW & MISSION STRATEGY CARD
         bl_rect = pygame.Rect(20, 648, 380, 142)
         ui.draw_glass_panel(screen, bl_rect, border_radius=6)
