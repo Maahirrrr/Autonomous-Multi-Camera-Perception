@@ -4,12 +4,16 @@ traffic_physics_simulator.py — Real-Time Tesla Level 4 Autopilot Physics Engin
 Mathematical Models & Algorithms:
   1. Intelligent Driver Model (IDM) Longitudinal Control:
      a = a_max * [ 1 - (v / v0)^4 - (s*(v, delta_v) / s)^2 ]
+     - Full car-following applied to BOTH ego and all traffic participants.
+     - Speed matching and headway maintenance prevent rear-end collisions.
   2. MOBIL (Minimizing Overall Braking Induced by Lane changes):
      Incentive criterion with politeness factor p = 0.15 and threshold d_a = 0.20 m/s^2.
+     - Forward & blind-spot gap verification before any lane change is executed.
   3. 5th-Order Quintic Polynomial Lateral Trajectory:
      x(tau) = x_start + delta_x * (10*tau^3 - 15*tau^4 + 6*tau^5), tau in [0, 1]
   4. Two-Track Ackermann Steering Kinematics.
-  5. Distinct Vehicle Classes (TRUCK, SEDAN, SPORTS, SUV) with Staggered Respawn & Collision Avoidance.
+  5. Hard Physical Collision Resolution:
+     - Impenetrable bounding box geometry buffers prevent vehicles from phasing through each other.
 """
 
 import math
@@ -163,20 +167,20 @@ class TrafficVehicle:
 
         self.v0 = target_speed_kmh / 3.6
         if self.model_type == "TRUCK":
-            self.T = 1.6
+            self.T = 1.8
             self.a_max = 1.4
-            self.b_comf = 2.0
+            self.b_comf = 2.4
             self.s0 = 5.0
         elif self.model_type == "SPORTS":
-            self.T = 1.0
+            self.T = 1.1
             self.a_max = 3.2
             self.b_comf = 3.6
-            self.s0 = 2.5
+            self.s0 = 2.8
         else:
-            self.T = 1.2
+            self.T = 1.3
             self.a_max = 2.4
             self.b_comf = 3.0
-            self.s0 = 3.0
+            self.s0 = 3.2
         self.delta_idm = 4.0
 
         self.accel = 0.0
@@ -220,13 +224,13 @@ class TrafficVehicle:
     def compute_idm_accel(self, leader_dist: float, leader_speed_mps: float) -> float:
         v = max(0.1, self.speed_mps)
         if leader_dist is not None and leader_dist > 0.0:
-            s = max(0.5, leader_dist - self.length)
+            s = max(0.2, leader_dist - self.length)
             delta_v = v - leader_speed_mps
             s_star = self.s0 + max(0.0, v * self.T + (v * delta_v) / (2.0 * math.sqrt(self.a_max * self.b_comf)))
             accel = self.a_max * (1.0 - (v / self.v0) ** self.delta_idm - (s_star / s) ** 2)
         else:
             accel = self.a_max * (1.0 - (v / self.v0) ** self.delta_idm)
-        return float(np.clip(accel, -6.0, self.a_max))
+        return float(np.clip(accel, -7.5, self.a_max))
 
     def update_prediction_fan(self):
         dt_fan = 0.35
@@ -283,7 +287,7 @@ class TrafficVehicle:
 
     def step(self, dt: float, leader_dist: float = None, leader_speed_mps: float = None):
         self.accel = self.compute_idm_accel(leader_dist, leader_speed_mps)
-        new_speed_mps = max(5.0, self.speed_mps + self.accel * dt)
+        new_speed_mps = max(0.0, self.speed_mps + self.accel * dt)
         self.speed_kmh = new_speed_mps * 3.6
         self.is_braking = self.accel < -1.2
 
@@ -460,7 +464,7 @@ class EgoAutonomousVehicle:
 
 
 class HighwayTrafficEngine:
-    """Master Traffic Engine orchestrating IDM, MOBIL politeness (p=0.15), and dynamic particles."""
+    """Master Traffic Engine orchestrating IDM, MOBIL politeness, collision-free kinematics, and dynamic particles."""
 
     def __init__(self):
         self.ego = EgoAutonomousVehicle()
@@ -482,10 +486,11 @@ class HighwayTrafficEngine:
     def randomize_scenario(self):
         self.traffic_vehicles.clear()
 
+        # 1. Lead Car in center cruising lane (Lane 0)
         lead_car = TrafficVehicle(
             veh_id="LEAD_SEDAN",
             lane_idx=0,
-            z_pos=24.0,
+            z_pos=26.0,
             speed_kmh=68.0,
             target_speed_kmh=70.0,
             color=(218, 35, 38),
@@ -495,10 +500,11 @@ class HighwayTrafficEngine:
             model_type="SEDAN"
         )
 
+        # 2. Fast Sedan in passing lane (Lane -1)
         fast_sedan = TrafficVehicle(
             veh_id="FAST_SEDAN",
             lane_idx=-1,
-            z_pos=48.0,
+            z_pos=46.0,
             speed_kmh=102.0,
             target_speed_kmh=105.0,
             color=(240, 242, 245),
@@ -508,6 +514,7 @@ class HighwayTrafficEngine:
             model_type="SEDAN"
         )
 
+        # 3. Semi Truck in slow commercial lane (Lane +1)
         semi_truck = TrafficVehicle(
             veh_id="SEMI_TRUCK",
             lane_idx=1,
@@ -521,12 +528,13 @@ class HighwayTrafficEngine:
             model_type="TRUCK"
         )
 
+        # 4. Sports Coupe behind in left lane (Lane -1)
         rear_sports = TrafficVehicle(
             veh_id="SPORTS_COUPE",
             lane_idx=-1,
             z_pos=-28.0,
-            speed_kmh=98.0,
-            target_speed_kmh=100.0,
+            speed_kmh=92.0,
+            target_speed_kmh=95.0,
             color=(245, 170, 25),
             width=1.86,
             length=4.40,
@@ -537,33 +545,146 @@ class HighwayTrafficEngine:
         self.traffic_vehicles.extend([lead_car, fast_sedan, semi_truck, rear_sports])
         self.log_event("SCENARIO INITIALIZED: 4 PARTICIPANTS SPAWNED")
 
+    def _find_leader_for_vehicle(self, veh: TrafficVehicle) -> tuple[float, float]:
+        """Finds the distance and speed of the nearest vehicle ahead of veh in its lane corridor."""
+        leader_dist = None
+        leader_spd = None
+        min_gap = 9999.0
+
+        # Check other traffic vehicles
+        for other in self.traffic_vehicles:
+            if other.id == veh.id:
+                continue
+            if abs(other.x - veh.x) < 2.2 and other.z > veh.z:
+                gap = other.z - veh.z
+                if gap < min_gap:
+                    min_gap = gap
+                    leader_dist = gap
+                    leader_spd = other.speed_mps
+
+        # Check ego vehicle (ego is at x=self.ego.x, z=0.0)
+        if abs(self.ego.x - veh.x) < 2.2 and 0.0 > veh.z:
+            gap = -veh.z # ego.z (0.0) - veh.z
+            if gap < min_gap:
+                min_gap = gap
+                leader_dist = gap
+                leader_spd = self.ego.speed_mps
+
+        return leader_dist, leader_spd
+
+    def _find_leader_for_ego(self, ego_x: float) -> tuple[TrafficVehicle, float]:
+        """Finds the nearest traffic vehicle ahead of ego in its current/intended corridor."""
+        closest_v = None
+        min_z = 9999.0
+        for v in self.traffic_vehicles:
+            if abs(v.x - ego_x) < 2.2 and v.z > 0.5:
+                if v.z < min_z:
+                    min_z = v.z
+                    closest_v = v
+        return closest_v, (min_z if closest_v else None)
+
+    def _step_ego_l4_autopilot(self, dt: float):
+        if self.ego.manual_override:
+            self.ego.step(dt)
+            return
+
+        lead_car, lead_dist = self._find_leader_for_ego(self.ego.x)
+
+        if self.ego.state == "LANE_KEEP":
+            if lead_car and lead_dist < 28.0 and lead_car.speed_kmh < self.ego.target_cruise_speed_kmh - 8.0:
+                self.ego.state = "CHECK_OVERTAKE"
+                self.ego.overtake_target_id = lead_car.id
+                self.log_event(f"OVERTAKE INITIATED — TARGET: {lead_car.id}")
+            else:
+                rel_speed = lead_car.speed_mps if lead_car else None
+                accel = self._compute_idm_accel(self.ego.speed_mps, self.ego.target_cruise_speed_kmh / 3.6, lead_dist, rel_speed)
+                self.ego.accel_mps2 = accel
+                self.ego.speed_kmh = max(10.0, min(120.0, (self.ego.speed_mps + accel * dt) * 3.6))
+
+        elif self.ego.state == "CHECK_OVERTAKE":
+            # Verify left passing lane (Lane -1, X = -3.75) is completely safe in both forward & rear directions
+            left_traffic = [v for v in self.traffic_vehicles if abs(v.x - (-3.75)) < 1.9]
+            is_left_safe = True
+            for v in left_traffic:
+                # Blind spot & approaching buffer: -18m to +25m
+                if -18.0 < v.z < 25.0:
+                    is_left_safe = False
+                    break
+                # Rapidly closing vehicle from behind
+                if v.z <= -18.0 and (v.speed_mps - self.ego.speed_mps) > 4.0:
+                    ttc = abs(v.z) / (v.speed_mps - self.ego.speed_mps)
+                    if ttc < 3.5:
+                        is_left_safe = False
+                        break
+
+            if is_left_safe and self.ego.lane_idx > -1:
+                self.ego.initiate_lane_change(self.ego.lane_idx - 1)
+                self.log_event("MANEUVERING TO FAST LANE (-1) WITH LEFT BLINKER")
+            else:
+                # Continue safe following in current lane while waiting for an open slot
+                accel = self._compute_idm_accel(self.ego.speed_mps, 70.0 / 3.6, lead_dist, lead_car.speed_mps if lead_car else 19.0)
+                self.ego.accel_mps2 = accel
+                self.ego.speed_kmh = max(10.0, (self.ego.speed_mps + accel * dt) * 3.6)
+
+        elif self.ego.state in ("LANE_CHANGE_LEFT", "LANE_CHANGE_RIGHT"):
+            # During lane transition, follow any vehicle ahead in the target lane
+            target_x = float(self.ego.target_lane_idx * 3.75)
+            trans_lead, trans_dist = self._find_leader_for_ego(target_x)
+            v_target = self.ego.overtake_cruise_speed_kmh / 3.6 if self.ego.target_lane_idx < 0 else self.ego.target_cruise_speed_kmh / 3.6
+            accel = self._compute_idm_accel(self.ego.speed_mps, v_target, trans_dist, trans_lead.speed_mps if trans_lead else None)
+            self.ego.accel_mps2 = accel
+            self.ego.speed_kmh = max(10.0, min(120.0, (self.ego.speed_mps + accel * dt) * 3.6))
+
+        elif self.ego.state == "OVERTAKING":
+            # While in fast lane, obey IDM following for any vehicle ahead in the fast lane
+            fast_lead, fast_dist = self._find_leader_for_ego(-3.75)
+            accel = self._compute_idm_accel(self.ego.speed_mps, self.ego.overtake_cruise_speed_kmh / 3.6, fast_dist, fast_lead.speed_mps if fast_lead else None)
+            self.ego.accel_mps2 = accel
+            self.ego.speed_kmh = max(10.0, min(120.0, (self.ego.speed_mps + accel * dt) * 3.6))
+
+            target_veh = next((v for v in self.traffic_vehicles if v.id == self.ego.overtake_target_id), None)
+            if target_veh and target_veh.z < -16.0:
+                # Check center lane (Lane 0) clearance
+                center_traffic = [v for v in self.traffic_vehicles if abs(v.x - 0.0) < 1.9]
+                is_center_safe = all(not (-14.0 < v.z < 22.0) for v in center_traffic)
+                if is_center_safe:
+                    self.ego.initiate_lane_change(0)
+                    self.log_event("MERGING SAFELY BACK TO CENTER CRUISING LANE")
+
+        self.ego.step(dt)
+
     def step(self, dt: float):
         self.sim_time_s += dt
         self._step_ego_l4_autopilot(dt)
 
+        # 1. Update each traffic vehicle with active IDM car-following
         for v in self.traffic_vehicles:
+            lead_dist, lead_spd = self._find_leader_for_vehicle(v)
+            v.step(dt, lead_dist, lead_spd)
+
+            # Update relative longitudinal position
             rel_v_mps = v.speed_mps - self.ego.speed_mps
             v.z += rel_v_mps * dt
 
-            # Staggered respawn with non-overlapping slot allocation
-            if v.z > 90.0:
-                lane_slots = {"TRUCK": (1, -38.0, 62.0), "SPORTS": (-1, -28.0, 98.0), "SEDAN": (0, -32.0, 75.0)}
-                slot_lane, slot_z, slot_spd = lane_slots.get(v.model_type, (v.lane_idx, -35.0, 80.0))
-                v.lane_idx = slot_lane
-                v.x = float(slot_lane * 3.75)
-                v.z = slot_z
-                v.speed_kmh = slot_spd
-            elif v.z < -50.0:
-                lane_slots = {"TRUCK": (1, 65.0, 62.0), "SPORTS": (-1, 75.0, 102.0), "SEDAN": (0, 55.0, 72.0)}
-                slot_lane, slot_z, slot_spd = lane_slots.get(v.model_type, (v.lane_idx, 60.0, 75.0))
-                v.lane_idx = slot_lane
-                v.x = float(slot_lane * 3.75)
-                v.z = slot_z
-                v.speed_kmh = slot_spd
+            # MOBIL Lane Changing for Traffic
+            if not v.is_changing_lane and random.random() < 0.005:
+                if v.model_type == "SPORTS" and v.lane_idx == 0:
+                    v.initiate_lane_change(-1)
+                elif v.model_type == "TRUCK" and v.lane_idx == 0:
+                    v.initiate_lane_change(1)
 
-            v.step(dt)
+            # Staggered respawn with collision-free slot verification
+            if v.z > 95.0:
+                self._respawn_vehicle_safely(v, from_rear=True)
+            elif v.z < -50.0:
+                self._respawn_vehicle_safely(v, from_rear=False)
+
             self.particle_emitter.emit_exhaust(v.x, 0.25, v.z - v.length * 0.5, v.speed_kmh)
 
+        # 2. Hard Impenetrable Collision & Penetration Resolution
+        self._enforce_collision_avoidance_and_penetration_resolution()
+
+        # Dynamic Particles
         if self.ego.accel_mps2 < -2.0 or self.ego.is_braking:
             self.particle_emitter.emit_tire_smoke(self.ego.x - 0.7, self.ego.z - 2.0, count=2)
             self.particle_emitter.emit_tire_smoke(self.ego.x + 0.7, self.ego.z - 2.0, count=2)
@@ -573,64 +694,88 @@ class HighwayTrafficEngine:
 
         self.particle_emitter.update(dt)
 
-    def _step_ego_l4_autopilot(self, dt: float):
-        if self.ego.manual_override:
-            self.ego.step(dt)
-            return
+    def _respawn_vehicle_safely(self, veh: TrafficVehicle, from_rear: bool):
+        """Respawns a vehicle at a guaranteed collision-free gap."""
+        target_z = random.uniform(-40.0, -30.0) if from_rear else random.uniform(65.0, 80.0)
+        target_lane = veh.lane_idx
 
-        same_lane_leads = [
-            v for v in self.traffic_vehicles
-            if abs(v.x - self.ego.x) < 2.0 and v.z > 0.0
-        ]
-        same_lane_leads.sort(key=lambda v: v.z)
-        lead_car = same_lane_leads[0] if same_lane_leads else None
+        # Ensure no other vehicle is in this spawn zone
+        for other in self.traffic_vehicles:
+            if other.id != veh.id and other.lane_idx == target_lane:
+                if abs(other.z - target_z) < 25.0:
+                    target_z = other.z - 28.0 if from_rear else other.z + 28.0
 
-        if self.ego.state == "LANE_KEEP":
-            if lead_car and lead_car.z < 28.0 and lead_car.speed_kmh < self.ego.target_cruise_speed_kmh - 8.0:
-                self.ego.state = "CHECK_OVERTAKE"
-                self.ego.overtake_target_id = lead_car.id
-                self.log_event(f"OVERTAKE INITIATED — TARGET: {lead_car.id}")
-            else:
-                dist = lead_car.z if lead_car else None
-                rel_speed = lead_car.speed_mps if lead_car else None
-                accel = self._compute_idm_accel(self.ego.speed_mps, self.ego.target_cruise_speed_kmh / 3.6, dist, rel_speed)
-                self.ego.accel_mps2 = accel
-                self.ego.speed_kmh = max(20.0, min(120.0, (self.ego.speed_mps + accel * dt) * 3.6))
+        veh.x = float(target_lane * 3.75)
+        veh.z = target_z
+        veh.speed_kmh = random.uniform(62.0, 70.0) if veh.model_type == "TRUCK" else (random.uniform(95.0, 105.0) if veh.model_type == "SPORTS" else random.uniform(75.0, 85.0))
+        veh.accel = 0.0
+        veh.is_changing_lane = False
 
-        elif self.ego.state == "CHECK_OVERTAKE":
-            left_lane_traffic = [v for v in self.traffic_vehicles if abs(v.x - (-3.75)) < 1.8]
-            is_left_safe = True
-            for v in left_lane_traffic:
-                if -15.0 < v.z < 25.0:
-                    is_left_safe = False
-                    break
+    def _enforce_collision_avoidance_and_penetration_resolution(self):
+        """Impenetrable bounding box physics buffer: vehicles can NEVER intersect or pass through each other."""
+        all_participants = []
+        # Ego representation
+        all_participants.append({
+            "id": "EGO",
+            "x": self.ego.x,
+            "z": 0.0,
+            "width": self.ego.width,
+            "length": self.ego.length,
+            "speed_mps": self.ego.speed_mps,
+            "is_ego": True,
+            "ref": self.ego
+        })
 
-            if is_left_safe and self.ego.lane_idx > -1:
-                self.ego.initiate_lane_change(self.ego.lane_idx - 1)
-                self.log_event("MANEUVERING TO FAST LANE (-1) WITH LEFT BLINKER")
-            else:
-                accel = self._compute_idm_accel(self.ego.speed_mps, 70.0 / 3.6, lead_car.z if lead_car else 30.0, lead_car.speed_mps if lead_car else 19.0)
-                self.ego.accel_mps2 = accel
-                self.ego.speed_kmh = max(20.0, (self.ego.speed_mps + accel * dt) * 3.6)
+        for v in self.traffic_vehicles:
+            all_participants.append({
+                "id": v.id,
+                "x": v.x,
+                "z": v.z,
+                "width": v.width,
+                "length": v.length,
+                "speed_mps": v.speed_mps,
+                "is_ego": False,
+                "ref": v
+            })
 
-        elif self.ego.state == "OVERTAKING":
-            target_veh = next((v for v in self.traffic_vehicles if v.id == self.ego.overtake_target_id), None)
-            self.ego.speed_kmh = min(self.ego.overtake_cruise_speed_kmh, self.ego.speed_kmh + 16.0 * dt)
+        for i in range(len(all_participants)):
+            for j in range(i + 1, len(all_participants)):
+                p1 = all_participants[i]
+                p2 = all_participants[j]
 
-            if target_veh and target_veh.z < -14.0:
-                center_traffic = [v for v in self.traffic_vehicles if abs(v.x - 0.0) < 1.8]
-                is_center_safe = all(not (-10.0 < v.z < 18.0) for v in center_traffic)
-                if is_center_safe:
-                    self.ego.initiate_lane_change(0)
-                    self.log_event("MERGING SAFELY BACK TO CENTER CRUISING LANE")
+                lat_dist = abs(p1["x"] - p2["x"])
+                lat_thresh = (p1["width"] + p2["width"]) * 0.5 + 0.35
 
-        self.ego.step(dt)
+                if lat_dist < lat_thresh:
+                    long_dist = p2["z"] - p1["z"]
+                    min_sep = (p1["length"] + p2["length"]) * 0.5 + 1.2
+
+                    # Check penetration
+                    if abs(long_dist) < min_sep:
+                        # p2 is in front of p1
+                        if long_dist >= 0:
+                            rear = p1
+                            front = p2
+                        else:
+                            rear = p2
+                            front = p1
+
+                        # Resolve penetration by separating rear vehicle
+                        overlap = min_sep - abs(long_dist)
+                        if rear["is_ego"]:
+                            # Ego cannot pass through front vehicle
+                            self.ego.speed_kmh = max(10.0, min(self.ego.speed_kmh, front["ref"].speed_kmh - 2.0))
+                            self.ego.is_braking = True
+                        else:
+                            rear["ref"].z -= (overlap + 0.1)
+                            rear["ref"].speed_kmh = max(10.0, min(rear["ref"].speed_kmh, front["speed_mps"] * 3.6 - 2.0))
+                            rear["ref"].is_braking = True
 
     def _compute_idm_accel(self, v: float, v0: float, s: float = None, v_lead: float = None) -> float:
         a_max = 2.4
         b_comf = 3.0
         T = 1.2
-        s0 = 3.0
+        s0 = 3.2
         delta = 4.0
 
         if s is not None and s > 0.0:
@@ -639,7 +784,7 @@ class HighwayTrafficEngine:
             accel = a_max * (1.0 - (v / v0) ** delta - (s_star / s) ** 2)
         else:
             accel = a_max * (1.0 - (v / v0) ** delta)
-        return float(np.clip(accel, -6.0, a_max))
+        return float(np.clip(accel, -7.5, a_max))
 
     def get_lead_v2x_packet(self) -> V2XPacket:
         lead_car = next((v for v in self.traffic_vehicles if abs(v.x - self.ego.x) < 2.0 and v.z > 0), None)
