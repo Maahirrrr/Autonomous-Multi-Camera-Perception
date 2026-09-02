@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tesla Level 4 — Digital Twin Dashboard</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100;200;300;400;500;600;700&display=swap');
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#050608;
+  --dash:#0A0C10;
+  --panel-bg:rgba(10,14,20,0.97);
+  --bezel:#111418;
+  --border:rgba(255,255,255,0.07);
+  --border2:rgba(255,255,255,0.12);
+  --blue:#00AAFF;
+  --blue2:#0066CC;
+  --cyan:#00E5FF;
+  --green:#00E676;
+  --amber:#FFB300;
+  --red:#FF1744;
+  --white:#FFFFFF;
+  --t1:#E8EAED;
+  --t2:#9AA0A6;
+  --t3:#4A4F55;
+  --font:'Inter',-apple-system,sans-serif;
+}
+
+html,body{
+  width:100%;height:100%;
+  background:var(--bg);
+  font-family:var(--font);
+  overflow:hidden;
+  user-select:none;
+  color:var(--t1);
+}
+
+#bezel{
+  position:fixed;inset:0;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:radial-gradient(ellipse 120% 80% at 50% 110%, #1A1C20 0%, #050608 55%);
+}
+
+#display{
+  position:relative;
+  width:min(1280px,98vw);
+  height:min(540px,54vw);
+  background:#000;
+  border-radius:28px;
+  overflow:hidden;
+  border:1.5px solid rgba(255,255,255,0.1);
+  box-shadow:
+    0 0 0 6px #0D0F12,
+    0 0 0 7px rgba(255,255,255,0.06),
+    0 30px 80px rgba(0,0,0,0.9),
+    inset 0 1px 0 rgba(255,255,255,0.08);
+}
+
+#display::before{
+  content:'';
+  position:absolute;inset:0;
+  background:radial-gradient(ellipse 100% 100% at 50% 50%, transparent 60%, rgba(0,0,0,0.55) 100%);
+  pointer-events:none;z-index:50;
+  border-radius:inherit;
+}
+
+#display::after{
+  content:'';
+  position:absolute;top:0;left:5%;right:5%;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(255,255,255,0.15) 30%,rgba(255,255,255,0.2) 50%,rgba(255,255,255,0.15) 70%,transparent);
+  pointer-events:none;z-index:51;
+}
+
+#layout{
+  position:absolute;inset:0;
+  display:grid;
+  grid-template-columns:300px 1fr 280px;
+  background:var(--dash);
+}
+
+#left{
+  background:linear-gradient(160deg,#0D1018 0%,#080C12 100%);
+  border-right:1px solid var(--border);
+  display:flex;flex-direction:column;
+  padding:0;
+  overflow:hidden;
+  position:relative;
+}
+
+#speed-cluster{
+  padding:16px 20px 8px;
+  display:flex;align-items:flex-end;gap:0;
+  position:relative;
+}
+
+#speed-big{
+  font-size:84px;
+  font-weight:200;
+  letter-spacing:-4px;
+  line-height:1;
+  color:var(--white);
+  font-variant-numeric:tabular-nums;
+}
+
+#speed-meta{
+  display:flex;flex-direction:column;
+  margin-left:8px;margin-bottom:12px;gap:2px;
+}
+
+#speed-unit{
+  font-size:13px;font-weight:400;
+  color:var(--t2);letter-spacing:0.1em;
+}
+
+#speed-limit{
+  display:flex;align-items:center;justify-content:center;
+  width:32px;height:32px;border-radius:50%;
+  border:3px solid var(--amber);
+  font-size:12px;font-weight:700;
+  color:var(--white);margin-top:2px;
+}
+
+#cruise-row{
+  display:flex;align-items:center;gap:10px;
+  padding:0 20px 12px;
+}
+
+#cruise-badge{
+  display:flex;align-items:center;gap:6px;
+  padding:4px 10px;border-radius:20px;
+  background:rgba(0,170,255,0.12);
+  border:1px solid rgba(0,170,255,0.35);
+  font-size:10px;font-weight:600;letter-spacing:0.08em;
+  color:var(--blue);
+}
+
+.badge-dot{
+  width:5px;height:5px;border-radius:50%;
+  background:var(--blue);
+  animation:bpulse 1.8s ease-in-out infinite;
+}
+@keyframes bpulse{0%,100%{opacity:1}50%{opacity:0.25}}
+
+#cruise-spd{
+  font-size:12px;font-weight:400;color:var(--t2);
+}
+
+#minimap-wrap{
+  flex:1;position:relative;overflow:hidden;
+  border-top:1px solid var(--border);
+}
+
+#minimap{display:block;width:100%;height:100%;}
+
+#left-gauges{
+  padding:10px 20px 14px;
+  border-top:1px solid var(--border);
+  display:flex;gap:14px;align-items:center;
+}
+
+.gauge-item{
+  display:flex;flex-direction:column;gap:2px;
+}
+.gauge-lbl{font-size:9px;font-weight:500;letter-spacing:0.12em;color:var(--t3);text-transform:uppercase;}
+.gauge-val{font-size:12px;font-weight:500;color:var(--t1);font-variant-numeric:tabular-nums;}
+
+#bat-wrap{flex:1;}
+#bat-bar{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;margin-top:4px;overflow:hidden;}
+#bat-fill{height:100%;border-radius:3px;background:var(--green);transition:width 0.5s;}
+
+#center{
+  position:relative;
+  background:#000;
+  overflow:hidden;
+}
+
+#twin-canvas{display:block;width:100%;height:100%;}
+
+#twin-hud{
+  position:absolute;inset:0;
+  pointer-events:none;
+}
+
+#ap-banner{
+  position:absolute;
+  bottom:44px;left:50%;transform:translateX(-50%);
+  background:rgba(10,16,28,0.92);
+  border:1px solid rgba(0,170,255,0.45);
+  border-radius:24px;
+  padding:6px 18px;
+  display:flex;align-items:center;gap:8px;
+  font-size:11px;font-weight:500;letter-spacing:0.03em;
+  white-space:nowrap;
+  box-shadow:0 8px 24px rgba(0,0,0,0.6);
+}
+#ap-banner .ap-icon{font-size:13px;}
+#ap-banner .ap-main{color:var(--t1);}
+#ap-banner .ap-sub{color:var(--t2);font-size:9px;letter-spacing:0.06em;}
+
+#prnd{
+  position:absolute;
+  right:16px;bottom:14px;
+  display:flex;gap:8px;
+  font-size:13px;font-weight:600;letter-spacing:0.12em;
+}
+.gear{color:var(--t3);}
+.gear.active{color:var(--white);text-shadow:0 0 8px rgba(255,255,255,0.6);}
+
+#signals{
+  position:absolute;top:12px;left:50%;transform:translateX(-50%);
+  display:flex;gap:28px;
+}
+.signal{
+  font-size:18px;opacity:0;transition:opacity 0.1s;
+  color:var(--amber);
+}
+.signal.on{opacity:1;animation:sig 0.6s ease-in-out infinite;}
+@keyframes sig{0%,100%{opacity:1}50%{opacity:0.1}}
+
+#fcw-bar{
+  position:absolute;top:0;left:0;right:0;
+  height:3px;
+  background:var(--red);
+  transform:scaleX(0);
+  transform-origin:center;
+  transition:transform 0.2s;
+}
+
+#right{
+  background:linear-gradient(160deg,#0D1018 0%,#080C12 100%);
+  border-left:1px solid var(--border);
+  display:flex;flex-direction:column;
+  padding:0;overflow:hidden;
+}
+
+#right-header{
+  padding:14px 16px 8px;
+  border-bottom:1px solid var(--border);
+}
+#right-title{font-size:9px;font-weight:600;letter-spacing:0.15em;color:var(--t3);text-transform:uppercase;}
+
+#radar-wrap{
+  display:flex;justify-content:center;
+  padding:8px 0 6px;
+  border-bottom:1px solid var(--border);
+}
+
+#ttc-section{padding:8px 16px;border-bottom:1px solid var(--border);}
+#ttc-title{font-size:9px;font-weight:600;letter-spacing:0.15em;color:var(--t3);margin-bottom:6px;text-transform:uppercase;}
+
+.ttc-row{display:flex;align-items:center;gap:7px;margin-bottom:4px;}
+.ttc-id{font-size:9px;font-weight:500;color:var(--t2);width:60px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;letter-spacing:0.04em;}
+.ttc-bar{flex:1;height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;}
+.ttc-fill{height:100%;border-radius:3px;transition:width 0.15s;}
+.ttc-num{font-size:9px;font-weight:600;min-width:28px;text-align:right;font-variant-numeric:tabular-nums;}
+
+#evlog{flex:1;overflow:hidden;padding:8px 16px;}
+#evlog-title{font-size:9px;font-weight:600;letter-spacing:0.15em;color:var(--t3);margin-bottom:4px;text-transform:uppercase;}
+.ev-row{display:flex;gap:5px;margin-bottom:3px;line-height:1.3;}
+.ev-t{font-size:8px;color:var(--t3);font-variant-numeric:tabular-nums;min-width:38px;flex-shrink:0;}
+.ev-m{font-size:8px;color:var(--t2);}
+.ev-row.new .ev-m{color:var(--t1);}
+
+#ctrl{
+  position:fixed;
+  bottom:16px;left:50%;transform:translateX(-50%);
+  display:flex;gap:6px;z-index:100;
+}
+.cb{
+  padding:6px 12px;
+  background:rgba(255,255,255,0.06);
+  border:1px solid rgba(255,255,255,0.12);
+  border-radius:20px;
+  color:rgba(255,255,255,0.6);
+  font:500 9px/1 var(--font);letter-spacing:0.1em;
+  cursor:pointer;transition:all 0.15s;text-transform:uppercase;
+  backdrop-filter:blur(8px);
+}
+.cb:hover{background:rgba(255,255,255,0.15);color:#fff;border-color:rgba(255,255,255,0.25);}
+.cb.on{background:rgba(0,170,255,0.2);border-color:rgba(0,170,255,0.5);color:var(--blue);}
+
+#toast{
+  position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+  background:rgba(0,0,0,0.92);border:1px solid rgba(255,255,255,0.14);
+  padding:10px 22px;border-radius:8px;
+  font-size:12px;font-weight:500;letter-spacing:0.06em;
+  opacity:0;transition:opacity 0.25s;pointer-events:none;z-index:200;
+}
+#toast.show{opacity:1;}
+</style>
+</head>
+<body>
+
+<div id="bezel">
+  <div id="display">
+    <div id="layout">
+
+      <!-- ══ LEFT: Speed + Minimap ══ -->
+      <div id="left">
+        <div id="speed-cluster">
+          <span id="speed-big">54</span>
+          <div id="speed-meta">
+            <span id="speed-unit">mph</span>
+            <div id="speed-limit">70</div>
+          </div>
+        </div>
+
+        <div id="cruise-row">
+          <div id="cruise-badge">
+            <span class="badge-dot"></span>
+            <span>AUTOPILOT</span>
+          </div>
+          <span id="cruise-spd">Set 70 mph</span>
+        </div>
+
+        <div id="minimap-wrap">
+          <canvas id="minimap"></canvas>
+        </div>
+
+        <div id="left-gauges">
+          <div class="gauge-item">
+            <span class="gauge-lbl">Range</span>
+            <span class="gauge-val" id="g-range">214 mi</span>
+          </div>
+          <div class="gauge-item" id="bat-wrap">
+            <span class="gauge-lbl">Battery</span>
+            <div id="bat-bar"><div id="bat-fill" style="width:68%"></div></div>
+          </div>
+          <div class="gauge-item">
+            <span class="gauge-lbl">Temp</span>
+            <span class="gauge-val">72°F</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ CENTER: 3D Digital Twin ══ -->
+      <div id="center">
+        <canvas id="twin-canvas"></canvas>
+        <div id="twin-hud">
+          <div id="fcw-bar"></div>
+          <div id="signals">
+            <span class="signal" id="sig-l">◀</span>
+            <span class="signal" id="sig-r">▶</span>
+          </div>
+          <div id="ap-banner">
+            <span class="ap-icon">🛞</span>
+            <div>
+              <div class="ap-main" id="ap-main-text">Autopilot — Highway Pilot Active</div>
+              <div class="ap-sub">Always keep your hands on the wheel</div>
+            </div>
+          </div>
+          <div id="prnd">
+            <span class="gear">P</span>
+            <span class="gear">R</span>
+            <span class="gear">N</span>
+            <span class="gear active">D</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══ RIGHT: Radar + Telemetry ══ -->
+      <div id="right">
+        <div id="right-header">
+          <div id="right-title">Sensor Fusion & Radar</div>
+        </div>
+        <div id="radar-wrap">
+          <canvas id="radar" width="240" height="135"></canvas>
+        </div>
+        <div id="ttc-section">
+          <div id="ttc-title">Time-to-Collision</div>
+          <div id="ttc-list"></div>
+        </div>
+        <div id="evlog">
+          <div id="evlog-title">Mission Event Stream</div>
+          <div id="evlog-rows"></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<div id="ctrl">
+  <button class="cb on" id="b-ap" onclick="toggleAP()">Autopilot</button>
+  <button class="cb" id="b-wx" onclick="cycleWx()">Weather: Clear</button>
+  <button class="cb" id="b-nt" onclick="toggleNight()">Night</button>
+  <button class="cb" onclick="doRandom()">Randomize</button>
+  <button class="cb" onclick="laneLeft()">◂ Lane</button>
+  <button class="cb" onclick="laneRight()">Lane ▸</button>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const LANE_X={'-1':-3.75,'0':0.0,'1':3.75};
+const KMH=1/3.6;
+
+class Ego{
+  constructor(){
+    this.x=0;this.z=0;this.speed=88*KMH;
+    this.targetSpeed=88*KMH;this.laneIdx=0;
+    this.lcProgress=0;this.lcDur=3.0;this.lcStartX=0;this.lcTargetX=0;
+    this.isLC=false;this.targetLane=0;
+    this.accel=0;this.steerDeg=0;this.rollDeg=0;this.pitchDeg=0;
+    this.state='LANE_KEEP';this.autopilot=true;
+    this.blinker='OFF';this.gHist=[];
+    this.overtakeId=null;
+  }
+  get kmh(){return this.speed/KMH;}
+  get mph(){return this.speed/KMH*0.621371;}
+  lc(idx){
+    if(this.isLC)return;
+    idx=clamp(idx,-1,1);
+    const nx=LANE_X[String(idx)];
+    if(nx==null)return;
+    this.lcStartX=this.x;this.lcTargetX=nx;
+    this.lcProgress=0;this.isLC=true;this.targetLane=idx;
+    this.blinker=idx<this.laneIdx?'LEFT':'RIGHT';
+  }
+  step(dt){
+    if(this.isLC){
+      this.lcProgress+=dt/this.lcDur;
+      if(this.lcProgress>=1){
+        this.lcProgress=1;this.isLC=false;
+        this.laneIdx=this.targetLane;this.blinker='OFF';
+      }
+      const t=this.lcProgress;
+      const bl=10*t**3-15*t**4+6*t**5;
+      this.x=this.lcStartX+(this.lcTargetX-this.lcStartX)*bl;
+      const dbl=(30*t**2-60*t**3+30*t**4)/this.lcDur;
+      this.rollDeg=-14*dbl*(this.lcTargetX>this.lcStartX?1:-1);
+      this.steerDeg=-28*dbl*(this.lcTargetX>this.lcStartX?1:-1);
+    }else{
+      this.rollDeg*=0.85;this.steerDeg*=0.85;
+    }
+    this.speed=clamp(this.speed+this.accel*dt,5*KMH,145*KMH);
+    this.pitchDeg=clamp(-this.accel*1.2,-8,8);
+  }
+}
+
+class Veh{
+  constructor(id,lane,z,spd,tspd,col,w,l,type){
+    this.id=id;this.laneIdx=lane;
+    this.x=LANE_X[String(lane)];this.z=z;
+    this.speed=spd*KMH;this.targetSpeed=tspd*KMH;
+    this.col=col;this.w=w||1.9;this.l=l||4.75;
+    this.type=type||'SEDAN';
+    this.h=type==='TRUCK'?3.4:type==='SUV'?1.75:1.55;
+    this.accel=0;this.blinker='OFF';this.pitchDeg=0;
+    this.aMax=2.2;this.bComf=2.8;this.T=1.4;this.s0=3.5;
+    this.fanPts=[];
+  }
+  idm(s,vl){
+    const v=Math.max(0.1,this.speed),v0=this.targetSpeed;
+    if(s!=null&&s>0){
+      const sg=Math.max(0.5,s-this.l);
+      const dv=v-(vl||v);
+      const ss=this.s0+Math.max(0,v*this.T+(v*dv)/(2*Math.sqrt(this.aMax*this.bComf)));
+      return clamp(this.aMax*(1-(v/v0)**4-(ss/sg)**2),-7,this.aMax);
+    }
+    return clamp(this.aMax*(1-(v/v0)**4),-7,this.aMax);
+  }
+  updateFan(){
+    this.fanPts=[];
+    const v=Math.max(5*KMH,this.speed);
+    for(const ang of[-5,0,5]){
+      const pts=[];const r=ang*Math.PI/180;
+      for(let s=1;s<=8;s++){const t=s*0.35;pts.push([this.x+v*t*Math.sin(r),this.z+v*t]);}
+      this.fanPts.push({ang,pts});
+    }
+  }
+  step(dt,egoSpd){
+    this.z+=(this.speed-egoSpd)*dt;
+    if(this.z>95)this.z=-40+Math.random()*10;
+    if(this.z<-55)this.z=80+Math.random()*10;
+    this.accel=this.idm(null,null);
+    this.speed=clamp(this.speed+this.accel*dt,2*KMH,140*KMH);
+    this.pitchDeg=-this.accel*0.7;
+    this.updateFan();
+  }
+}
+
+class Engine{
+  constructor(){
+    this.ego=new Ego();
+    this.veh=[];
+    this.t=0;this.frame=0;
+    this.evlog=[];
+    this.weather='CLEAR';this.night=false;
+    this.radarAngle=0;
+    this.lidarPts=[];
+    this.init();
+  }
+  init(){
+    this.veh=[
+      new Veh('LEAD_CAR',0,22,68,70,'#CC2222',1.85,4.6,'SEDAN'),
+      new Veh('FAST_SEDAN',-1,42,102,105,'#D0D5DD',1.85,4.6,'SEDAN'),
+      new Veh('SEMI_TRUCK',1,16,62,65,'#2A6E3E',2.55,11.2,'TRUCK'),
+      new Veh('SPORTS_CAR',-1,-28,98,100,'#D4880A',1.75,4.4,'SPORTS'),
+      new Veh('SUV_RIGHT',1,38,72,75,'#1A4A8A',1.95,4.9,'SUV'),
+    ];
+    this.log('360° LIDAR + 4-CAM FUSION ACTIVE');
+    this.log('HIGHWAY PILOT ENGAGED — 88 KM/H');
+  }
+  log(m){
+    this.evlog.unshift({t:this.t.toFixed(1),m});
+    if(this.evlog.length>14)this.evlog.pop();
+  }
+  randomize(){
+    const cols=['#CC2222','#D0D5DD','#2A6E3E','#D4880A','#1A4A8A'];
+    this.veh.forEach(v=>{
+      v.z=(Math.random()-0.3)*90;
+      const s=55+Math.random()*50;
+      v.speed=s*KMH;v.targetSpeed=(s+Math.random()*10)*KMH;
+      v.col=cols[Math.floor(Math.random()*cols.length)];
+    });
+    this.log('SCENARIO RANDOMIZED');
+  }
+  idmEgo(v,v0,s,vl){
+    const aMax=2.2,bComf=2.8,T=1.4,s0=4.0;
+    if(s!=null&&s>0){
+      const dv=v-(vl||v);
+      const ss=s0+Math.max(0,v*T+(v*dv)/(2*Math.sqrt(aMax*bComf)));
+      return clamp(aMax*(1-(v/v0)**4-(ss/s)**2),-6,aMax);
+    }
+    return clamp(aMax*(1-(v/v0)**4),-6,aMax);
+  }
+  step(dt){
+    this.t+=dt;this.frame++;
+    this.radarAngle=(this.radarAngle+dt*90)%360;
+    const ego=this.ego;
+    if(ego.autopilot){
+      const same=this.veh.filter(v=>Math.abs(v.x-ego.x)<2&&v.z>0).sort((a,b)=>a.z-b.z);
+      const lead=same[0]||null;
+      if(ego.state==='LANE_KEEP'){
+        if(lead&&lead.z<28&&lead.speed<ego.targetSpeed-8*KMH){
+          ego.state='CHECK_OVERTAKE';ego.overtakeId=lead.id;
+          this.log('OVERTAKE → '+lead.id);
+        } else {
+          ego.accel=this.idmEgo(ego.speed,ego.targetSpeed,lead?lead.z:null,lead?lead.speed:null);
+        }
+      } else if(ego.state==='CHECK_OVERTAKE'){
+        const lt=this.veh.filter(v=>Math.abs(v.x-(-3.75))<1.8);
+        const safe=lt.every(v=>v.z<-18||v.z>28);
+        if(safe&&ego.laneIdx>-1){ego.lc(ego.laneIdx-1);ego.state='OVERTAKING';this.log('LANE CHANGE LEFT — OVERTAKE');}
+        else{ego.accel=this.idmEgo(ego.speed,70*KMH,lead?lead.z:30,lead?lead.speed:19*KMH);}
+      } else if(ego.state==='OVERTAKING'){
+        ego.accel=this.idmEgo(ego.speed,108*KMH,null,null);
+        const tgt=this.veh.find(v=>v.id===ego.overtakeId);
+        if(tgt&&tgt.z<-16){
+          const ct=this.veh.filter(v=>Math.abs(v.x-0)<1.8);
+          if(ct.every(v=>v.z<-12||v.z>20)){ego.lc(0);ego.state='LANE_KEEP';this.log('MERGE BACK — CRUISE LANE');}
+        }
+      }
+    }
+    ego.step(dt);
+    this.veh.forEach(v=>v.step(dt,ego.speed));
+
+    this.lidarPts=[];
+    for(let z=2;z<55;z+=2.0){
+      for(let x=-6.0;x<=6.0;x+=1.2){
+        if(Math.random()<0.50)this.lidarPts.push({x:x+(Math.random()-0.5)*0.4,z:z+Math.random()*0.6,y:0,i:0.25+Math.random()*0.35,rng:Math.sqrt(x*x+z*z)});
+      }
+    }
+    this.veh.forEach(v=>{
+      const d=Math.sqrt(v.x**2+v.z**2);
+      if(d<65){const n=Math.max(5,Math.floor(25-d/65*15));
+        for(let i=0;i<n;i++)this.lidarPts.push({x:v.x+(Math.random()-0.5)*v.w,z:v.z+(Math.random()-0.5)*v.l,y:0.3+Math.random()*v.h,i:0.9,rng:d});}
+    });
+  }
+}
+
+const eng=new Engine();
+const twinC=document.getElementById('twin-canvas');
+const twinX=twinC.getContext('2d');
+const radarC=document.getElementById('radar');
+const radarX=radarC.getContext('2d');
+const mmC=document.getElementById('minimap');
+const mmX=mmC.getContext('2d');
+
+function resize(){
+  const cp=document.getElementById('center');
+  const r=cp.getBoundingClientRect();
+  twinC.width=Math.round(r.width);
+  twinC.height=Math.round(r.height);
+  const mm=document.getElementById('minimap-wrap');
+  const mr=mm.getBoundingClientRect();
+  mmC.width=Math.round(mr.width);
+  mmC.height=Math.round(mr.height);
+}
+resize();
+window.addEventListener('resize',resize);
+
+function project3D(wx,wy,wz,W,H){
+  const CAM_HEIGHT=8.2;
+  const CAM_BACK=11.5;
+  const FOCAL=H*1.08;
+  const vanishY=H*0.40;
+
+  const cz=wz+CAM_BACK;
+  const cx=wx;
+  const cy=CAM_HEIGHT-wy;
+
+  if(cz<=0.5)return null;
+
+  const sx=W*0.5+cx/cz*FOCAL;
+  const sy=vanishY+cy/cz*FOCAL;
+  return[sx,sy,1/cz];
+}
+
+function drawVehicle3D(ctx,v,W,H,isEgo,frame){
+  const W2=v.w/2,L2=v.l/2,HH=v.h;
+  const wx=v.x||0,wz=v.z||0;
+
+  const corners=[
+    {x:wx-W2,y:0,z:wz-L2},{x:wx+W2,y:0,z:wz-L2},
+    {x:wx+W2,y:0,z:wz+L2},{x:wx-W2,y:0,z:wz+L2},
+    {x:wx-W2,y:HH,z:wz-L2},{x:wx+W2,y:HH,z:wz-L2},
+    {x:wx+W2,y:HH,z:wz+L2},{x:wx-W2,y:HH,z:wz+L2},
+  ];
+
+  const proj=corners.map(c=>project3D(c.x,c.y,c.z,W,H));
+  if(proj.some(p=>p===null))return;
+  if(proj[0][1]<0||proj[0][1]>H*1.2)return;
+
+  const ttc=Math.max(0.5,wz/8);
+  let bodyCol=v.col||'#3399FF';
+  let edgeCol;
+  if(isEgo){bodyCol='#1A3A6A';edgeCol='#00AAFF';}
+  else if(ttc<2.5){edgeCol='rgba(255,40,40,0.9)';}
+  else if(ttc<5){edgeCol='rgba(255,180,0,0.85)';}
+  else{edgeCol='rgba(80,220,130,0.6)';}
+
+  if(!isEgo){
+    ctx.beginPath();
+    const[b0,b1,b2,b3]=proj.slice(0,4);
+    ctx.moveTo(b0[0],b0[1]);ctx.lineTo(b1[0],b1[1]);
+    ctx.lineTo(b2[0],b2[1]);ctx.lineTo(b3[0],b3[1]);
+    ctx.closePath();
+    ctx.fillStyle='rgba(0,0,0,0.30)';ctx.fill();
+  }
+
+  const faces=[
+    {verts:[4,5,6,7],light:0.88,name:'top'},
+    {verts:[0,1,5,4],light:0.72,name:'front'},
+    {verts:[3,2,6,7],light:0.55,name:'back'},
+    {verts:[0,3,7,4],light:0.65,name:'left'},
+    {verts:[1,2,6,5],light:0.65,name:'right'},
+  ];
+
+  const sortedFaces=faces.map(f=>{
+    const pts=f.verts.map(i=>proj[i]);
+    const avgY=pts.reduce((s,p)=>s+(p?p[1]:0),0)/pts.length;
+    return{...f,pts,avgY};
+  }).sort((a,b)=>b.avgY-a.avgY);
+
+  sortedFaces.forEach(face=>{
+    if(face.pts.some(p=>!p))return;
+    ctx.beginPath();
+    face.pts.forEach((p,i)=>i===0?ctx.moveTo(p[0],p[1]):ctx.lineTo(p[0],p[1]));
+    ctx.closePath();
+
+    if(isEgo){
+      const g=ctx.createLinearGradient(face.pts[0][0],face.pts[0][1],face.pts[2][0],face.pts[2][1]);
+      g.addColorStop(0,`rgba(18,55,115,${face.light})`);
+      g.addColorStop(1,`rgba(10,32,75,${face.light*0.8})`);
+      ctx.fillStyle=g;ctx.fill();
+      ctx.strokeStyle='rgba(0,180,255,0.85)';ctx.lineWidth=1.5;ctx.stroke();
+    } else {
+      let r=100,g2=100,b=100;
+      try{
+        const hex=bodyCol.replace('#','');
+        r=parseInt(hex.slice(0,2),16);g2=parseInt(hex.slice(2,4),16);b=parseInt(hex.slice(4,6),16);
+      }catch(e){}
+      const lf=face.light;
+      ctx.fillStyle=`rgba(${Math.floor(r*lf)},${Math.floor(g2*lf)},${Math.floor(b*lf)},0.96)`;
+      ctx.fill();
+      ctx.strokeStyle=edgeCol||'rgba(255,255,255,0.2)';
+      ctx.lineWidth=1.5;ctx.stroke();
+    }
+  });
+
+  if(!isEgo&&wz>0){
+    const rl=proj[3],rr=proj[2],rlt=proj[7],rrt=proj[6];
+    if(rl&&rr&&rlt&&rrt){
+      const lightH=(rlt[1]-rl[1])*0.25;
+      const lightW=(rr[0]-rl[0])*0.18;
+      ctx.fillStyle='rgba(255,25,25,0.95)';
+      ctx.fillRect(rl[0]+lightW*0.3,rlt[1]+lightH*0.5,lightW*1.2,lightH*1.2);
+      ctx.fillRect(rr[0]-lightW*1.5,rlt[1]+lightH*0.5,lightW*1.2,lightH*1.2);
+    }
+  }
+
+  const top=proj[4];
+  if(top&&top[1]>0&&top[1]<H-10){
+    ctx.fillStyle='rgba(200,225,255,0.8)';
+    ctx.font=`500 10px Inter,sans-serif`;
+    ctx.textAlign='center';
+    if(!isEgo)ctx.fillText(`${wz.toFixed(0)}m`,top[0],top[1]-4);
+    ctx.textAlign='left';
+  }
+}
+
+function drawRoad3D(ctx,W,H,eng,frame){
+  const sky=ctx.createLinearGradient(0,0,0,H*0.40);
+  sky.addColorStop(0,'#05080E');
+  sky.addColorStop(1,'#0C131D');
+  ctx.fillStyle=sky;ctx.fillRect(0,0,W,H*0.42);
+
+  const roadG=ctx.createLinearGradient(0,H*0.40,0,H);
+  roadG.addColorStop(0,'#161C24');
+  roadG.addColorStop(0.4,'#0F141A');
+  roadG.addColorStop(1,'#080C10');
+  ctx.fillStyle=roadG;ctx.fillRect(0,H*0.40,W,H*0.60);
+
+  const laneXs=[-5.8,-1.875,1.875,5.8];
+  const zNear=1.5,zFar=120;
+
+  function projLane(wx,wz){return project3D(wx,0,wz,W,H);}
+
+  // Glowing Tesla Cyan Autopilot Corridor for Ego Lane
+  const curLaneX=eng.ego.laneIdx*3.75;
+  const leftBound=curLaneX-1.875;
+  const rightBound=curLaneX+1.875;
+
+  ctx.beginPath();
+  for(let z=zNear;z<55;z+=3){
+    const pL=projLane(leftBound,z);
+    if(pL)i===0?ctx.moveTo(pL[0],pL[1]):ctx.lineTo(pL[0],pL[1]);
+  }
+  ctx.strokeStyle='rgba(0,180,255,0.55)';ctx.lineWidth=3;ctx.stroke();
+
+  ctx.beginPath();
+  for(let z=zNear;z<55;z+=3){
+    const pR=projLane(rightBound,z);
+    if(pR)i===0?ctx.moveTo(pR[0],pR[1]):ctx.lineTo(pR[0],pR[1]);
+  }
+  ctx.strokeStyle='rgba(0,180,255,0.55)';ctx.lineWidth=3;ctx.stroke();
+
+  // Lane lines
+  laneXs.forEach((lx,i)=>{
+    const isEdge=i===0||i===3;
+    const isYellow=i===0;
+    ctx.strokeStyle=isYellow?'rgba(235,190,25,0.85)':isEdge?'rgba(255,255,255,0.65)':'rgba(255,255,255,0.35)';
+    ctx.lineWidth=isEdge?2.5:1.5;
+
+    if(isEdge){
+      const pNear=projLane(lx,zNear);const pFar=projLane(lx,zFar);
+      if(pNear&&pFar){ctx.beginPath();ctx.moveTo(pNear[0],pNear[1]);ctx.lineTo(pFar[0],pFar[1]);ctx.stroke();}
+    } else {
+      let z=zNear;const dashLen=8,gapLen=12;let drawing=true;
+      while(z<zFar){
+        const pA=projLane(lx,z);const pB=projLane(lx,z+(drawing?dashLen:gapLen));
+        if(pA&&pB&&drawing){ctx.beginPath();ctx.moveTo(pA[0],pA[1]);ctx.lineTo(pB[0],pB[1]);ctx.stroke();}
+        z+=(drawing?dashLen:gapLen);drawing=!drawing;
+      }
+    }
+  });
+
+  // LiDAR dots
+  if(eng.lidarPts){
+    eng.lidarPts.forEach(pt=>{
+      const pp=project3D(pt.x,pt.y,pt.z,W,H);
+      if(!pp||pp[0]<0||pp[0]>W||pp[1]<0||pp[1]>H)return;
+      const rng=pt.rng;
+      let col;
+      if(pt.y>0.3) col=rng<12?'rgba(255,50,50,0.8)':rng<25?'rgba(255,180,0,0.7)':'rgba(0,220,120,0.6)';
+      else col=`rgba(30,120,230,${0.25+pt.i*0.3})`;
+      ctx.fillStyle=col;
+      const sz=Math.max(1,pp[2]*3.5);
+      ctx.fillRect(pp[0]-sz/2,pp[1]-sz/2,sz,sz);
+    });
+  }
+}
+
+function drawTwin(ctx,C,eng,frame){
+  const W=C.width,H=C.height;
+  if(W===0||H===0)return;
+  ctx.fillStyle='#050810';ctx.fillRect(0,0,W,H);
+
+  drawRoad3D(ctx,W,H,eng,frame);
+
+  const allVeh=[...eng.veh].sort((a,b)=>b.z-a.z);
+  allVeh.forEach(v=>drawVehicle3D(ctx,v,W,H,false,frame));
+
+  const egoProxy={x:eng.ego.x,z:0,w:1.96,l:4.97,h:1.44,col:'#1A3A6A'};
+  drawVehicle3D(ctx,egoProxy,W,H,true,frame);
+}
+
+function drawRadar(ctx,eng,frame){
+  const W=240,H=135,cx=120,cy=72,RX=95,RY=54;
+  ctx.fillStyle='#070A0F';ctx.fillRect(0,0,W,H);
+
+  [0.33,0.66,1.0].forEach(f=>{
+    ctx.beginPath();ctx.ellipse(cx,cy,RX*f,RY*f,0,0,Math.PI*2);
+    ctx.strokeStyle=`rgba(0,170,255,${0.08+0.04*f})`;ctx.lineWidth=0.5;ctx.stroke();
+  });
+
+  ctx.beginPath();ctx.moveTo(cx,cy);
+  ctx.ellipse(cx,cy,RX,RY,0,-Math.PI/2-Math.PI/3,-Math.PI/2+Math.PI/3);
+  ctx.closePath();ctx.fillStyle='rgba(0,100,200,0.06)';ctx.fill();
+  ctx.strokeStyle='rgba(0,150,255,0.25)';ctx.lineWidth=1;ctx.stroke();
+
+  const sa=(eng.radarAngle-90)*Math.PI/180;
+  ctx.beginPath();ctx.moveTo(cx,cy);
+  ctx.lineTo(cx+RX*Math.cos(sa),cy+RY*Math.sin(sa));
+  ctx.strokeStyle='rgba(0,229,255,0.7)';ctx.lineWidth=1.5;ctx.stroke();
+
+  eng.veh.forEach(v=>{
+    const rng=Math.sqrt(v.x**2+v.z**2);
+    const az=Math.atan2(v.x,Math.max(0.1,v.z));
+    if(rng>85||Math.abs(az)>Math.PI/3)return;
+    const f=rng/85;const tx=cx+RX*f*Math.sin(az);const ty=cy-RY*f*Math.cos(az);
+    const ttc=Math.max(0.5,v.z/8);
+    const bc=ttc<3?'#FF1744':ttc<6?'#FFB300':'#00E676';
+
+    ctx.beginPath();ctx.arc(tx,ty,3.5,0,Math.PI*2);ctx.fillStyle=bc;ctx.fill();
+    ctx.fillStyle='rgba(180,215,250,0.6)';ctx.font='8px Inter,sans-serif';
+    ctx.fillText(`${rng.toFixed(0)}m`,tx+5,ty-3);
+  });
+}
+
+function drawMinimap(ctx,C,eng){
+  const W=C.width,H=C.height;
+  if(!W||!H)return;
+  ctx.fillStyle='#080D14';ctx.fillRect(0,0,W,H);
+
+  const cx=W/2,cy=H*0.65,sc=H*0.016;
+  function mp(wx,wz){return[cx+wx*sc,cy-wz*sc];}
+
+  ctx.fillStyle='#0D1520';
+  const[rx1]=mp(-7,0);const[rx2]=mp(7,0);
+  ctx.fillRect(rx1,0,rx2-rx1,H);
+
+  // Highway Blue Navigation Route Line
+  ctx.strokeStyle='rgba(0,150,255,0.85)';ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(cx,H);ctx.lineTo(cx,18);ctx.stroke();
+
+  // Navigation Shield Icon
+  ctx.fillStyle='#1E4070';ctx.fillRect(cx-12,24,24,14);
+  ctx.fillStyle='#FFF';ctx.font='700 8px Inter,sans-serif';ctx.fillText('280',cx-8,34);
+
+  // Street Labels
+  ctx.fillStyle='rgba(160,175,195,0.6)';ctx.font='8px Inter,sans-serif';
+  ctx.fillText('Lawler Ranch Rd',cx+8,60);
+  ctx.fillText('Woodside Rd',cx+8,110);
+
+  // Ego
+  const[ex,ey]=mp(eng.ego.x,0);
+  const eh=1.95/2*sc,el=4.75/2*sc;
+  ctx.fillStyle='rgba(0,140,255,0.3)';
+  ctx.strokeStyle='rgba(0,190,255,1.0)';ctx.lineWidth=2;
+  ctx.beginPath();ctx.roundRect(ex-eh,ey-el,eh*2,el*2,[eh*0.5,eh*0.5,2,2]);
+  ctx.fill();ctx.stroke();
+}
+
+function updateUI(eng){
+  const ego=eng.ego;
+  const mph=ego.mph;
+  document.getElementById('speed-big').textContent=Math.round(mph);
+  document.getElementById('cruise-spd').textContent=`Set ${Math.round(ego.targetSpeed/KMH*0.621371)} mph`;
+
+  const states={'LANE_KEEP':'Autopilot — Highway Pilot Active','CHECK_OVERTAKE':'Autopilot — Preparing Overtake','OVERTAKING':'Autopilot — Overtaking'};
+  document.getElementById('ap-main-text').textContent=ego.autopilot?(states[ego.state]||'Autopilot Active'):'Manual Drive Mode';
+
+  document.getElementById('sig-l').classList.toggle('on',ego.blinker==='LEFT');
+  document.getElementById('sig-r').classList.toggle('on',ego.blinker==='RIGHT');
+
+  const closestFwd=eng.veh.filter(v=>v.z>0).sort((a,b)=>a.z-b.z)[0];
+  const ttcMin=closestFwd?closestFwd.z/Math.max(0.5,ego.speed-closestFwd.speed):99;
+  const fcwEl=document.getElementById('fcw-bar');
+  fcwEl.style.transform=ttcMin<2.5?'scaleX(1)':'scaleX(0)';
+
+  const ttcEl=document.getElementById('ttc-list');
+  ttcEl.innerHTML='';
+  eng.veh.filter(v=>v.z>0&&v.z<80).sort((a,b)=>a.z-b.z).slice(0,4).forEach(v=>{
+    const t=clamp(v.z/Math.max(0.5,ego.speed-v.speed),0,12);
+    const pct=clamp((10-t)/10,0,1)*100;
+    const col=t<2.5?'#FF1744':t<5?'#FFB300':'#00E676';
+    const row=document.createElement('div');row.className='ttc-row';
+    row.innerHTML=`<span class="ttc-id">${v.id.split('_')[0]}</span><div class="ttc-bar"><div class="ttc-fill" style="width:${pct}%;background:${col}"></div></div><span class="ttc-num" style="color:${col}">${t.toFixed(1)}s</span>`;
+    ttcEl.appendChild(row);
+  });
+
+  const logEl=document.getElementById('evlog-rows');
+  logEl.innerHTML='';
+  eng.evlog.slice(0,7).forEach((e,i)=>{
+    const row=document.createElement('div');row.className=`ev-row${i===0?' new':''}`;
+    row.innerHTML=`<span class="ev-t">T+${e.t}s</span><span class="ev-m">${e.m}</span>`;
+    logEl.appendChild(row);
+  });
+
+  document.getElementById('b-ap').classList.toggle('on',ego.autopilot);
+  document.getElementById('b-nt').classList.toggle('on',eng.night);
+}
+
+let last=performance.now();
+function loop(now){
+  requestAnimationFrame(loop);
+  const dt=Math.min((now-last)/1000,0.033);last=now;
+  eng.step(dt);
+  const fr=eng.frame;
+  drawTwin(twinX,twinC,eng,fr);
+  drawRadar(radarX,eng,fr);
+  drawMinimap(mmX,mmC,eng);
+  updateUI(eng);
+}
+requestAnimationFrame(loop);
+
+function toast(m){
+  const el=document.getElementById('toast');
+  el.textContent=m;el.classList.add('show');
+  clearTimeout(el._t);el._t=setTimeout(()=>el.classList.remove('show'),1800);
+}
+function toggleAP(){eng.ego.autopilot=!eng.ego.autopilot;eng.log(eng.ego.autopilot?'AUTOPILOT ENGAGED':'MANUAL OVERRIDE');toast(eng.ego.autopilot?'Autopilot On':'Manual Mode');}
+const wxList=['CLEAR','RAIN','FOG'];let wxI=0;
+function cycleWx(){wxI=(wxI+1)%3;eng.weather=wxList[wxI];document.getElementById('b-wx').textContent='Weather: '+eng.weather;eng.log('WEATHER → '+eng.weather);toast('Weather: '+eng.weather);}
+function toggleNight(){eng.night=!eng.night;eng.log(eng.night?'NIGHT MODE ON':'DAYLIGHT');toast(eng.night?'Night Mode':'Daylight');}
+function doRandom(){eng.randomize();toast('Scenario Randomized');}
+function laneLeft(){eng.ego.lc(eng.ego.laneIdx-1);eng.log('LANE CHANGE LEFT');toast('◂ Left Lane');}
+function laneRight(){eng.ego.lc(eng.ego.laneIdx+1);eng.log('LANE CHANGE RIGHT');toast('Right Lane ▸');}
+
+document.addEventListener('keydown',e=>{
+  switch(e.key.toLowerCase()){
+    case'tab':e.preventDefault();toggleAP();break;
+    case'r':doRandom();break;
+    case'n':toggleNight();break;
+    case'p':cycleWx();break;
+    case'a':laneLeft();break;
+    case'd':laneRight();break;
+    case'w':eng.ego.speed=clamp(eng.ego.speed+5*KMH,5*KMH,145*KMH);break;
+    case's':eng.ego.speed=clamp(eng.ego.speed-8*KMH,5*KMH,145*KMH);break;
+  }
+});
+</script>
+</body>
+</html>

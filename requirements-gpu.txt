@@ -1,0 +1,6 @@
+# Optional: enables the CUDA-accelerated IPM homography benchmark overlay
+# (torch.nn.functional.grid_sample). The app runs fine without this —
+# it just reports CPU-only timing instead of a GPU vs CPU comparison.
+#
+#   pip install -r requirements.txt -r requirements-gpu.txt
+torch>=2.0.0

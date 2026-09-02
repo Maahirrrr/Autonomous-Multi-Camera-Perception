@@ -4,9 +4,9 @@ bev_transformer_engine.py — Tesla Level 4 BEV Transformer & Log-Odds Occupancy
 Algorithms & Systems:
   - 2D Probabilistic Log-Odds Occupancy Grid:
       L_t(x, y) = lambda * L_{t-1}(x, y) + l_sensor(x, y) - l_0
-      Rendered with Tesla Cyan (#00D4FF), Green free space, and Red risk zones.
+      Rendered with Tesla Cyan (#00E5FF), Green free space, and Red risk zones.
   - Multi-Hypothesis 3-Second Trajectory Prediction Fans (H0, H1, H2) with Arrowheads.
-  - PyTorch CUDA GPU-Accelerated IPM Homography via torch.nn.functional.grid_sample.
+  - PyTorch CUDA GPU-Accelerated IPM Homography via torch.nn.functional.grid_sample (GPU Optional).
   - Thermal-IR Ironbow Night Palette for FLIR heat signatures.
 """
 
@@ -14,8 +14,15 @@ import math
 import time
 import numpy as np
 import cv2
-import torch
-import torch.nn.functional as F
+
+try:
+    import torch
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    F = None
+    TORCH_AVAILABLE = False
 
 from lidar_3d_pointcloud_engine import BoundingBox3D
 
@@ -57,7 +64,7 @@ class ProbabilisticOccupancyGrid:
                 for x in range(self.w):
                     p = probs[y, x]
                     if p > 0.60:
-                        heat_img[y, x] = (40, int(180 * p), 255) # BGR
+                        heat_img[y, x] = (40, int(180 * p), 255)
                     elif p < 0.40:
                         heat_img[y, x] = (int(60 * (1.0 - p)), 20, 15)
                     else:
@@ -67,17 +74,17 @@ class ProbabilisticOccupancyGrid:
                 for x in range(self.w):
                     p = probs[y, x]
                     if p > 0.60:
-                        heat_img[y, x] = (30, 30, int(235 * p)) # Tesla Red
+                        heat_img[y, x] = (30, 30, int(235 * p))
                     elif p < 0.40:
-                        heat_img[y, x] = (35, int(150 * (1.0 - p)), 20) # Muted Green
+                        heat_img[y, x] = (35, int(150 * (1.0 - p)), 20)
                     else:
-                        heat_img[y, x] = (14, 14, 18) # Pure Dark
+                        heat_img[y, x] = (14, 14, 18)
 
         return cv2.resize(heat_img, (out_w, out_h), interpolation=cv2.INTER_LINEAR)
 
 
 class MultiCameraBEVTransformer:
-    """Inverse Perspective Mapping & Spatial Fusion with PyTorch CUDA Acceleration."""
+    """Inverse Perspective Mapping & Spatial Fusion with Optional PyTorch CUDA Acceleration."""
 
     def __init__(self, bev_width_px: int = 440, bev_height_px: int = 480, x_range_m: float = 15.0, z_range_m: float = 30.0):
         self.w = bev_width_px
@@ -88,7 +95,11 @@ class MultiCameraBEVTransformer:
         self.px_per_m_z = (self.h * 0.70) / self.z_range
 
         self.occupancy_grid = ProbabilisticOccupancyGrid()
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if TORCH_AVAILABLE:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = type("_CpuDevice", (), {"type": "cpu"})()
+
         self.gpu_speedup_stats = {"gpu_ms": 0.6, "cpu_ms": 7.4, "speedup": 12.3}
 
         self.cameras = {
@@ -101,6 +112,10 @@ class MultiCameraBEVTransformer:
         self._build_gpu_sampling_grids()
 
     def _build_gpu_sampling_grids(self):
+        if not TORCH_AVAILABLE:
+            self.norm_grid = None
+            return
+
         grid_y, grid_x = torch.meshgrid(
             torch.linspace(-1.0, 1.0, self.h, device=self.device),
             torch.linspace(-1.0, 1.0, self.w, device=self.device),
@@ -108,8 +123,8 @@ class MultiCameraBEVTransformer:
         )
         self.norm_grid = torch.stack((grid_x, grid_y), dim=-1).unsqueeze(0)
 
-    def benchmark_gpu_ipm_homography(self, dummy_tensor: torch.Tensor):
-        if self.device.type == "cuda":
+    def benchmark_gpu_ipm_homography(self, dummy_tensor):
+        if TORCH_AVAILABLE and self.device.type == "cuda":
             t0 = time.perf_counter()
             _ = F.grid_sample(dummy_tensor, self.norm_grid, mode="bilinear", padding_mode="zeros", align_corners=True)
             torch.cuda.synchronize()
@@ -140,13 +155,13 @@ class MultiCameraBEVTransformer:
 
         bev_canvas = self.occupancy_grid.generate_heatmap_rgb(self.w, self.h, is_thermal=is_thermal_night)
 
-        if self.device.type == "cuda" and (frame_idx % 30 == 0):
+        if TORCH_AVAILABLE and self.device.type == "cuda" and (frame_idx % 30 == 0):
             dummy_b = torch.zeros((1, 3, self.h, self.w), device=self.device, dtype=torch.float32)
             self.benchmark_gpu_ipm_homography(dummy_b)
 
         # 1. 3-Lane Highway Geometry
         lane_col = (245, 245, 250)
-        yellow_divider = (30, 205, 255) # BGR Yellow
+        yellow_divider = (30, 205, 255)
 
         u_ly, _ = self.world_to_bev(-5.8, 0.0)
         if 0 <= u_ly < self.w:
@@ -177,7 +192,7 @@ class MultiCameraBEVTransformer:
                 u, v = self.world_to_bev(px, pz)
                 if 0 <= u < self.w and 0 <= v < self.h:
                     if py >= 0.28:
-                        p_col = (255, 212, 0) if rng > 14.0 else (0, 212, 255) # Tesla Cyan
+                        p_col = (255, 212, 0) if rng > 14.0 else (0, 212, 255)
                         cv2.circle(bev_canvas, (u, v), 1, p_col, -1)
                     else:
                         g_val = int(min(255, 160 * intensity))
@@ -217,11 +232,11 @@ class MultiCameraBEVTransformer:
 
             ttc_est = max(0.5, bbox.cz / 8.0)
             if ttc_est < 2.0:
-                risk_col = (48, 59, 255) # Tesla Red (BGR)
+                risk_col = (48, 59, 255)
             elif ttc_est < 4.0:
-                risk_col = (30, 185, 255) # Amber
+                risk_col = (30, 185, 255)
             else:
-                risk_col = (120, 210, 0) # Green
+                risk_col = (120, 210, 0)
 
             cv2.polylines(bev_canvas, [poly_pts], True, risk_col, 2, cv2.LINE_AA)
 
@@ -234,7 +249,6 @@ class MultiCameraBEVTransformer:
         u_ego, v_ego = cx_ego, cy_ego
         hw_e, hl_e = int(1.95 * 0.5 * self.px_per_m_x), int(4.75 * 0.5 * self.px_per_m_z)
 
-        # Headlight cones
         hl_cone = bev_canvas.copy()
         for offset_x in (-hw_e + 2, hw_e - 2):
             c_poly = np.array([
@@ -245,7 +259,6 @@ class MultiCameraBEVTransformer:
             cv2.fillPoly(hl_cone, [c_poly], (255, 235, 220))
         cv2.addWeighted(hl_cone, 0.10, bev_canvas, 0.90, 0, bev_canvas)
 
-        # Body Silhouette
         cv2.rectangle(bev_canvas, (u_ego - hw_e, v_ego - hl_e + 4), (u_ego + hw_e, v_ego + hl_e), (255, 212, 0), 2, cv2.LINE_AA)
         cv2.line(bev_canvas, (u_ego, v_ego - hl_e), (u_ego, v_ego - hl_e - 12), (0, 212, 255), 2, cv2.LINE_AA)
 

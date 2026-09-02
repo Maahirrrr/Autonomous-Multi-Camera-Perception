@@ -1,6 +1,6 @@
+# Core dependencies — everything you need to run the cockpit on CPU only.
 pygame-ce>=2.5.0
 numpy>=1.24.0
 opencv-python>=4.8.0
 scipy>=1.10.0
-torch>=2.0.0
 pytest>=8.0.0

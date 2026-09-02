@@ -1,11 +1,11 @@
 """
-run_bev_surround.py — Apple-Tesla Level 4 Autonomous Vehicle 360° Spatial Perception Cockpit
-============================================================================================
+run_bev_surround.py — Tesla Level 4 Autonomous Vehicle 360° Spatial Perception Cockpit
+======================================================================================
 Brand DNA & Design Architecture:
-  - Apple Frosted Obsidian Glass (#0A0A0C / #0E1117) with 1px Metallic Chamfers (#1E232F).
+  - Apple Frosted Obsidian Glass (#08090C / #0E1117) with 1px Metallic Chamfers (#222836).
   - Tesla Electric Cyan (#00E5FF) Autopilot Accents & Ultra Red (#FF334B) Emergency Alerts.
-  - Razor-Sharp High-DPI Monospace Glyphs (Consolas / Segoe UI / SF Mono) at Native Resolution.
-  - Perfectly Aligned Telemetry Cards with Collision-Free Gauge & Radar Readouts.
+  - Reusable UI Widgets (Gradient Glass Panels, FCW Glow Outlines, Fading Radar Trails).
+  - Scaled Fullscreen / Custom Resolution Display Engine with CLI Runtime Configuration.
   - Locked 60 FPS Asynchronous Perception Pipeline (0.6ms CUDA GPU Latency).
 """
 
@@ -14,17 +14,21 @@ import os
 import time
 import math
 import random
-import argparse
+import logging
 import concurrent.futures
 import numpy as np
 import cv2
 import pygame
 
+import config as cfg
+import ui_widgets as ui
 from bev_transformer_engine import MultiCameraBEVTransformer
 from multi_cam_simulator import MultiCameraSimulator
 from lidar_3d_pointcloud_engine import Lidar3DPerceptionEngine
 from traffic_physics_simulator import HighwayTrafficEngine
 from digital_twin_3d_renderer import DigitalTwin3DRenderer
+
+log = logging.getLogger("l4_cockpit")
 
 
 def get_crisp_mono_font(size: int, bold: bool = True) -> pygame.font.Font:
@@ -52,19 +56,33 @@ def get_crisp_ui_font(size: int, bold: bool = True) -> pygame.font.Font:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Apple-Tesla Level 4 Autonomous Perception Cockpit")
-    parser.add_argument("--export", type=str, default=None, help="Export session to MP4 video")
-    parser.add_argument("--max-frames", type=int, default=300, help="Max frames for export")
-    args = parser.parse_args()
+    args = cfg.build_arg_parser().parse_args()
+    settings = cfg.settings_from_args(args)
+
+    logging.basicConfig(level=getattr(logging, settings.log_level), format="[%(levelname)s] %(message)s")
+
+    if settings.seed is not None:
+        random.seed(settings.seed)
+        np.random.seed(settings.seed)
+        log.info(f"Reproducible run: random seed = {settings.seed}")
 
     pygame.init()
-    screen_w, screen_h = 1280, 800
+    screen_w, screen_h = cfg.LOGICAL_WIDTH, cfg.LOGICAL_HEIGHT
     pygame.display.set_caption("Tesla Level 4 Autonomous 360° Perception Cockpit • Apple-Tesla Design DNA")
 
+    display_flags = pygame.DOUBLEBUF | pygame.SCALED
+    if settings.fullscreen:
+        display_flags |= pygame.FULLSCREEN
+
+    window_size = (settings.width, settings.height)
     try:
-        screen = pygame.display.set_mode((screen_w, screen_h), pygame.DOUBLEBUF | pygame.HWSURFACE)
-    except Exception:
-        screen = pygame.display.set_mode((screen_w, screen_h), pygame.DOUBLEBUF)
+        screen = pygame.display.set_mode(window_size, display_flags, vsync=1)
+    except Exception as exc:
+        log.warning(f"SCALED display mode unavailable ({exc}); falling back to standard window")
+        try:
+            screen = pygame.display.set_mode((screen_w, screen_h), pygame.DOUBLEBUF | pygame.HWSURFACE)
+        except Exception:
+            screen = pygame.display.set_mode((screen_w, screen_h), pygame.DOUBLEBUF)
 
     clock = pygame.time.Clock()
 
@@ -96,20 +114,20 @@ def main():
 
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
     radar_history = []
+    radar_sweep_trail = []
 
-    print("\n" + "=" * 78)
-    print("  [+] TESLA LEVEL 4 AUTONOMOUS PERCEPTION COCKPIT (APPLE-TESLA EDITION)")
-    print("  Design DNA         : Apple Obsidian Glass (#08090C) + Tesla Cyan & Red")
-    print("  Typography         : Razor-Sharp Monospace Subpixel Antialiased Glyphs")
-    print("  Driving Physics    : Refined IDM Headway (1.2s) & MOBIL Courtesy (0.15)")
-    print("  Controls           : [TAB] Pilot | [N] Night | [P] Weather | [R] Randomize")
-    print("=" * 78 + "\n")
+    log.info("=" * 78)
+    log.info("TESLA LEVEL 4 AUTONOMOUS PERCEPTION COCKPIT (APPLE-TESLA EDITION)")
+    log.info("Design DNA      : Apple Obsidian Glass (#08090C) + Tesla Cyan & Red")
+    log.info("Driving Physics : Refined IDM Headway (1.2s) & MOBIL Courtesy (0.15)")
+    log.info(f"Controls        : {cfg.KEY_HELP}")
+    log.info("=" * 78)
 
     video_writer = None
-    if args.export:
+    if settings.export_path:
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        video_writer = cv2.VideoWriter(args.export, fourcc, 60.0, (screen_w, screen_h))
-        print(f"[INFO] Exporting L4 Perception recording to: {args.export}")
+        video_writer = cv2.VideoWriter(settings.export_path, fourcc, float(settings.fps), (screen_w, screen_h))
+        log.info(f"Exporting L4 Perception recording to: {settings.export_path}")
 
     running = True
     frame_count = 0
@@ -120,17 +138,17 @@ def main():
     weather_idx = 0
     night_mode = False
 
-    # Apple-Tesla Premium Palette
-    COLOR_BG_PURE = (8, 9, 12)           # #08090C Frosted Obsidian
-    COLOR_PANEL_BG = (14, 17, 23)        # #0E1117 Deep Titanium Glass
-    COLOR_CARD_BG = (20, 24, 34)         # #141822 Translucent Glass Card
-    COLOR_BORDER_THIN = (34, 40, 54)     # #222836 1px Chamfer
-    COLOR_TEXT_MAIN = (245, 248, 255)    # #F5F8FF Pure Crisp White
-    COLOR_TEXT_MUTED = (138, 146, 162)   # #8A92A2 Apple Neutral Gray
-    COLOR_TESLA_CYAN = (0, 229, 255)     # #00E5FF Electric Tesla Cyan
-    COLOR_TESLA_RED = (255, 51, 75)      # #FF334B Ultra Red Alert
-    COLOR_APPLE_GREEN = (48, 209, 88)    # #30D158 Apple iOS Emerald
-    COLOR_APPLE_AMBER = (255, 214, 10)   # #FFD60A Apple iOS Amber
+    # Apple-Tesla Premium Palette (single source of truth: config.py)
+    COLOR_BG_PURE = cfg.COLOR_BG_PURE
+    COLOR_PANEL_BG = cfg.COLOR_PANEL_BG
+    COLOR_CARD_BG = cfg.COLOR_CARD_BG
+    COLOR_BORDER_THIN = cfg.COLOR_BORDER_THIN
+    COLOR_TEXT_MAIN = cfg.COLOR_TEXT_MAIN
+    COLOR_TEXT_MUTED = cfg.COLOR_TEXT_MUTED
+    COLOR_TESLA_CYAN = cfg.COLOR_TESLA_CYAN
+    COLOR_TESLA_RED = cfg.COLOR_TESLA_RED
+    COLOR_APPLE_GREEN = cfg.COLOR_APPLE_GREEN
+    COLOR_APPLE_AMBER = cfg.COLOR_APPLE_AMBER
 
     while running:
         dt = 0.016
@@ -165,7 +183,6 @@ def main():
 
             twin_renderer.handle_mouse_orbit(event, rect_offset=(420, 180))
 
-        # Manual Override Handling
         if traffic_engine.ego.manual_override:
             keys = pygame.key.get_pressed()
             if keys[pygame.K_w]:
@@ -228,9 +245,12 @@ def main():
 
         screen.blit(font_ui_title.render("TESLA LEVEL 4 AUTONOMOUS PERCEPTION STACK", True, COLOR_TEXT_MAIN), (20, 6))
 
-        # Status Badges
-        stat_txt = f"WEATHER: {current_weather}  |  {'NIGHT (FLIR)' if night_mode else 'DAYLIGHT'}  |  CUDA: 0.6ms  |  60 FPS"
+        # Status Badges & Live Performance Meter
+        stat_txt = f"WEATHER: {current_weather}  |  {'NIGHT (FLIR)' if night_mode else 'DAYLIGHT'}  |  CUDA: 0.6ms"
         screen.blit(font_mono_xs.render(stat_txt, True, COLOR_TEXT_MUTED), (screen_w - 530, 9))
+
+        if settings.show_fps:
+            ui.draw_fps_hud(screen, font_mono_xs, clock.get_fps(), (screen_w - 635, 9))
 
         mode_badge = pygame.Rect(screen_w - 180, 4, 165, 24)
         m_border = COLOR_APPLE_GREEN if not ego.manual_override else COLOR_APPLE_AMBER
@@ -260,12 +280,11 @@ def main():
         # 5. MIDDLE ROW — LEFT PANEL: VEHICLE KINEMATICS & DYNAMICS
         # -------------------------------------------------------------
         left_panel_rect = pygame.Rect(20, 180, 380, 460)
-        pygame.draw.rect(screen, COLOR_PANEL_BG, left_panel_rect, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER_THIN, left_panel_rect, 1, border_radius=6)
+        ui.draw_glass_panel(screen, left_panel_rect, border_radius=6)
 
         screen.blit(font_ui_title.render("VEHICLE KINEMATICS & DYNAMICS", True, COLOR_TESLA_CYAN), (35, 192))
 
-        # MINIMALIST ARC SPEEDOMETER (Apple-Tesla Clean Aesthetics)
+        # MINIMALIST ARC SPEEDOMETER
         scx, scy = 110, 275
         pygame.draw.circle(screen, (22, 26, 36), (scx, scy), 64, 2)
         pygame.draw.arc(screen, (20, 24, 32), (scx - 62, scy - 62, 124, 124), math.radians(-45), math.radians(225), 10)
@@ -298,7 +317,7 @@ def main():
 
         gy_mid = 222 + 52
         pygame.draw.line(screen, (28, 34, 48), (205, gy_mid - 32), (385, gy_mid - 32), 1)
-        pygame.draw.line(screen, (40, 48, 68), (205, gy_mid), (385, gy_mid), 1) # 0G Line
+        pygame.draw.line(screen, (40, 48, 68), (205, gy_mid), (385, gy_mid), 1)
         pygame.draw.line(screen, (28, 34, 48), (205, gy_mid + 32), (385, gy_mid + 32), 1)
 
         if len(ego.g_history) > 2:
@@ -388,8 +407,7 @@ def main():
         # 6. MIDDLE ROW — CENTER PANEL: 3D DIGITAL TWIN SIMULATION
         # -------------------------------------------------------------
         twin_rect = pygame.Rect(420, 180, 440, 460)
-        pygame.draw.rect(screen, COLOR_PANEL_BG, twin_rect, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER_THIN, twin_rect, 1, border_radius=6)
+        ui.draw_glass_panel(screen, twin_rect, border_radius=6)
 
         twin_surf = pygame.Surface((bev_w - 4, bev_h - 4))
         twin_renderer.render_3d_scene(
@@ -410,12 +428,11 @@ def main():
         # 7. MIDDLE ROW — RIGHT PANEL: 77GHz RADAR & V2X HUD
         # -------------------------------------------------------------
         right_panel_rect = pygame.Rect(880, 180, 380, 460)
-        pygame.draw.rect(screen, COLOR_PANEL_BG, right_panel_rect, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER_THIN, right_panel_rect, 1, border_radius=6)
+        ui.draw_glass_panel(screen, right_panel_rect, border_radius=6)
 
         screen.blit(font_ui_title.render("77GHz RADAR & V2X TELEMETRY", True, COLOR_TESLA_CYAN), (895, 192))
 
-        # 77GHz POLAR RADAR SCOPE (Generous spacing below header)
+        # 77GHz POLAR RADAR SCOPE (With Fading Sweep Trail)
         rcx, rcy = 1080, 298
         rad_r = 62
         pygame.draw.circle(screen, (8, 16, 12), (rcx, rcy), rad_r)
@@ -431,9 +448,17 @@ def main():
         screen.blit(font_mono_xs.render("-30 deg", True, (0, 160, 75)), (rcx - rad_r - 28, rcy - 14))
 
         sweep_deg = (frame_count * 4) % 360
-        sw_rad = math.radians(sweep_deg)
-        pygame.draw.line(screen, (0, 240, 95), (rcx, rcy),
-                         (rcx + int(rad_r * math.cos(sw_rad)), rcy - int(rad_r * math.sin(sw_rad))), 2)
+        radar_sweep_trail.append(sweep_deg)
+        if len(radar_sweep_trail) > 10:
+            radar_sweep_trail.pop(0)
+
+        for trail_i, trail_deg in enumerate(radar_sweep_trail):
+            trail_t = (trail_i + 1) / len(radar_sweep_trail)
+            tr_rad = math.radians(trail_deg)
+            tr_col = (int(0 * trail_t), int(240 * trail_t), int(95 * trail_t))
+            pygame.draw.line(screen, tr_col, (rcx, rcy),
+                             (rcx + int(rad_r * math.cos(tr_rad)), rcy - int(rad_r * math.sin(tr_rad))),
+                             2 if trail_i == len(radar_sweep_trail) - 1 else 1)
 
         for r_det in radar_detections:
             rx = rcx + int(r_det.x * 2.5)
@@ -444,7 +469,7 @@ def main():
                 pygame.draw.line(screen, (0, 225, 185), (rx, ry), (rx, ry - d_arrow), 2)
                 screen.blit(font_mono_xs.render(f"{r_det.range_m:.0f}m", True, COLOR_TEXT_MAIN), (rx + 5, ry - 6))
 
-        # LiDAR Count (In Dedicated Left Slot)
+        # LiDAR Count
         screen.blit(font_mono_lg.render(f"{len(point_cloud):,}", True, COLOR_TEXT_MAIN), (895, 235))
         screen.blit(font_mono_xs.render("64-BEAM HESAI", True, COLOR_TESLA_CYAN), (895, 258))
         screen.blit(font_mono_xs.render("RATE: 20 Hz", True, COLOR_TEXT_MUTED), (895, 274))
@@ -458,7 +483,7 @@ def main():
             ttc_val = 99.0
             ttc_col = COLOR_APPLE_GREEN
 
-        # LIVE TIME-TO-COLLISION 10-SEGMENT COUNTDOWN BAR (Aligned cleanly)
+        # LIVE TIME-TO-COLLISION 10-SEGMENT COUNTDOWN BAR
         screen.blit(font_mono_xs.render("TIME TO COLLISION (TTC)", True, COLOR_TEXT_MUTED), (895, 356))
         ttc_num_str = f"{ttc_val:.1f}s" if ttc_val < 50 else "--.-s"
         screen.blit(font_mono_ttc.render(ttc_num_str, True, ttc_col), (1175, 348))
@@ -493,16 +518,19 @@ def main():
         # -------------------------------------------------------------
         # 8. BOTTOM ROW: REAR MIRROR (CENTER), ADAS FCW (LEFT), LOG (RIGHT)
         # -------------------------------------------------------------
-        # BOTTOM-LEFT: ADAS FCW & MISSION STRATEGY CARD
+        # BOTTOM-LEFT: ADAS FCW & MISSION STRATEGY CARD (With Soft Alert Glow)
         bl_rect = pygame.Rect(20, 648, 380, 142)
-        pygame.draw.rect(screen, COLOR_PANEL_BG, bl_rect, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER_THIN, bl_rect, 1, border_radius=6)
+        ui.draw_glass_panel(screen, bl_rect, border_radius=6)
 
         screen.blit(font_ui_title.render("ADAS SAFETY & FCW INTELLIGENCE", True, COLOR_TESLA_CYAN), (32, 658))
 
         fcw_msg = f"FCW: LEAD CAR {lead_car.z:.1f}m | TTC {abs(ttc_val):.1f}s" if lead_car else "FCW: CLEAR CORRIDOR AHEAD"
-        pygame.draw.rect(screen, (16, 28, 22) if ttc_col == COLOR_APPLE_GREEN else (38, 16, 18), pygame.Rect(32, 680, 356, 28), border_radius=4)
-        pygame.draw.rect(screen, ttc_col, pygame.Rect(32, 680, 356, 28), 1, border_radius=4)
+        fcw_rect = pygame.Rect(32, 680, 356, 28)
+        if ttc_col == COLOR_TESLA_RED:
+            ui.draw_glow_rect(screen, fcw_rect, COLOR_TESLA_RED, border_radius=4, strength=3)
+
+        pygame.draw.rect(screen, (16, 28, 22) if ttc_col == COLOR_APPLE_GREEN else (38, 16, 18), fcw_rect, border_radius=4)
+        pygame.draw.rect(screen, ttc_col, fcw_rect, 1, border_radius=4)
         screen.blit(font_mono_sm.render(fcw_msg, True, ttc_col), (42, 686))
 
         screen.blit(font_mono_xs.render(f"AUTOPILOT TARGET: {ego.target_cruise_speed_kmh:.0f} KM/H (LANE {ego.lane_idx})", True, COLOR_TEXT_MAIN), (32, 720))
@@ -516,8 +544,7 @@ def main():
 
         # BOTTOM-RIGHT: REAL-TIME MISSION & EVENT LOG STREAM
         br_rect = pygame.Rect(880, 648, 380, 142)
-        pygame.draw.rect(screen, COLOR_PANEL_BG, br_rect, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER_THIN, br_rect, 1, border_radius=6)
+        ui.draw_glass_panel(screen, br_rect, border_radius=6)
 
         screen.blit(font_ui_title.render("MISSION & EVENT LOG STREAM", True, COLOR_TESLA_CYAN), (895, 658))
 
@@ -545,18 +572,18 @@ def main():
             screen.blit(font_mono_xs.render(body_str[:38], True, l_col), (995, y_entry + 2))
 
         pygame.display.flip()
-        clock.tick(60)
+        clock.tick(settings.fps)
 
         if video_writer:
             view_rgb = pygame.surfarray.array3d(screen)
             view_bgr = cv2.cvtColor(np.transpose(view_rgb, (1, 0, 2)), cv2.COLOR_RGB2BGR)
             video_writer.write(view_bgr)
-            if frame_count >= args.max_frames:
+            if frame_count >= settings.max_export_frames:
                 break
 
     if video_writer:
         video_writer.release()
-        print(f"[INFO] Export complete: {args.export}")
+        log.info(f"Export complete: {settings.export_path}")
 
     executor.shutdown(wait=False)
     pygame.quit()
