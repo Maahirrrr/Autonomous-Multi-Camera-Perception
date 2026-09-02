@@ -49,12 +49,11 @@ class Radar77GHzSimulator:
     def scan_targets(self, dynamic_objects: list, ego_speed_mps: float) -> list[RadarDetection]:
         detections = []
         for obj in dynamic_objects:
-            ox, oz, ow, ol, label, col = obj
+            ox, oz, ow, ol, label, col = obj[:6]
             rng = math.sqrt(ox**2 + oz**2)
             if 1.0 <= rng <= self.max_range_m:
                 az_deg = math.degrees(math.atan2(ox, max(0.1, oz)))
                 if abs(az_deg) <= (self.fov_deg * 0.5):
-                    # Relative Doppler velocity approximation
                     v_target_mps = 20.0 if "TRUCK" in label else (28.0 if "SPORTS" in label else 22.0)
                     v_rel = v_target_mps - ego_speed_mps
                     doppler = v_rel * math.cos(math.radians(az_deg))
@@ -78,8 +77,8 @@ class Lidar3DPerceptionEngine:
     def __init__(self, num_lasers: int = 64, max_range_m: float = 65.0):
         self.num_lasers = num_lasers
         self.max_range_m = max_range_m
-        self.horizontal_res_deg = 0.40 # ~900 firings per 360 rotation
-        self.weather_mode = "CLEAR" # 'CLEAR', 'RAIN', 'FOG'
+        self.horizontal_res_deg = 0.40
+        self.weather_mode = "CLEAR"
 
         # 64-beam non-linear elevation distribution [-25 deg, +15 deg]
         el_dense = np.linspace(-8.0, 2.0, 32)
@@ -95,57 +94,61 @@ class Lidar3DPerceptionEngine:
 
     def generate_scene_point_cloud(
         self,
-        dynamic_objects: list,
+        dynamic_objects: list = None,
         road_geometry: dict = None,
-        frame_idx: int = 0
+        road_params: dict = None,
+        frame_idx: int = 0,
+        **kwargs
     ) -> np.ndarray:
-        points = []
+        if dynamic_objects is None:
+            dynamic_objects = []
 
-        # Effective max range based on weather
         if self.weather_mode == "FOG":
-            effective_range = 26.0 # Severe fog attenuation
-            gamma_fog = 0.08
+            effective_range = 25.0
+            gamma_fog = 0.075
         elif self.weather_mode == "RAIN":
-            effective_range = 48.0
-            gamma_fog = 0.02
+            effective_range = 50.0
+            gamma_fog = 0.025
         else:
             effective_range = self.max_range_m
             gamma_fog = 0.005
 
-        azimuths = np.linspace(0.0, 360.0, int(360.0 / self.horizontal_res_deg), endpoint=False)
+        points = []
+        sensor_height = 1.45
+        azimuth_samples = np.arange(0, 360, 2.0)
 
-        # 1. Road Ground Plane Returns
-        h_lidar = 1.65 # Sensor mount height above ground
         for el_deg in self.elevation_angles_deg:
-            if el_deg < -0.8: # Pointing towards ground
-                el_rad = math.radians(el_deg)
-                # Distance to flat ground y = 0
-                r_ground = -h_lidar / math.sin(el_rad)
+            el_rad = math.radians(el_deg)
+            sin_el = math.sin(el_rad)
+            cos_el = math.cos(el_rad)
 
-                if 1.5 < r_ground < effective_range:
-                    for az_deg in azimuths[::3]: # Subsample for 60 FPS real-time
-                        az_rad = math.radians(az_deg)
-                        px = r_ground * math.cos(el_rad) * math.sin(az_rad)
-                        pz = r_ground * math.cos(el_rad) * math.cos(az_rad)
+            for az_deg in azimuth_samples:
+                az_rad = math.radians(az_deg)
+                dir_x = math.sin(az_rad) * cos_el
+                dir_y = sin_el
+                dir_z = math.cos(az_rad) * cos_el
+
+                if dir_y < -0.01:
+                    r_ground = -sensor_height / dir_y
+                    if 0.5 <= r_ground <= effective_range:
+                        px = dir_x * r_ground
+                        pz = dir_z * r_ground
                         py = 0.02
 
-                        # Asphalt vs Road Marking Reflectivity
                         is_lane_marker = (abs(px - (-1.875)) < 0.12 or abs(px - 1.875) < 0.12 or abs(px - (-5.8)) < 0.15 or abs(px - 5.8) < 0.15)
                         rho = 0.92 if is_lane_marker else 0.28
 
-                        # Lambertian intensity with fog absorption
                         intensity = (rho / max(1.0, (r_ground * 0.1)**2)) * math.exp(-gamma_fog * r_ground)
                         intensity = min(1.0, max(0.05, intensity))
                         points.append([px, py, pz, intensity, r_ground])
 
         # 2. Dynamic Obstacles Point Cloud
         for obj in dynamic_objects:
-            ox, oz, ow, ol, label, col = obj
-            oh = 1.60
+            ox, oz, ow, ol, label, col = obj[:6]
+            oh = obj[7] if len(obj) >= 8 else 1.60
             dist_to_obj = math.sqrt(ox**2 + oz**2)
 
             if dist_to_obj <= effective_range:
-                # Sample surface points across 3D box
                 num_pts = max(6, int(35 - (dist_to_obj / effective_range) * 22))
                 for _ in range(num_pts):
                     px = ox + random.uniform(-ow * 0.48, ow * 0.48)
@@ -155,7 +158,7 @@ class Lidar3DPerceptionEngine:
                     intensity = 0.90 * math.exp(-gamma_fog * rng)
                     points.append([px, py, pz, intensity, rng])
 
-        # 3. Rain / Fog Atmospheric Noise Particles
+        # 3. Atmospheric Particles
         if self.weather_mode in ("RAIN", "FOG"):
             noise_cnt = 80 if self.weather_mode == "RAIN" else 150
             for _ in range(noise_cnt):
@@ -178,8 +181,8 @@ class Lidar3DPerceptionEngine:
         bounding_boxes = []
         if dynamic_objects:
             for obj in dynamic_objects:
-                ox, oz, ow, ol, label, col = obj
-                oh = 1.60
+                ox, oz, ow, ol, label, col = obj[:6]
+                oh = obj[7] if len(obj) >= 8 else 1.60
                 bbox = BoundingBox3D(cx=ox, cy=oh * 0.5, cz=oz, dx=ow, dy=oh, dz=ol, label=label)
                 bounding_boxes.append(bbox)
         else:
@@ -222,7 +225,6 @@ class Lidar3DPerceptionEngine:
         else:
             return []
 
-        # Forward frustum clipping
         valid_front = z_cam > 1.2
         x_c = x_cam[valid_front]
         y_c = y_cam[valid_front]
@@ -232,12 +234,10 @@ class Lidar3DPerceptionEngine:
         if len(z_c) == 0:
             return []
 
-        # Perspective Pin-Hole Projection
         focal = (image_w * 0.5) / math.tan(math.radians(42.5))
         u = (image_w * 0.5) + (x_c / z_c) * focal
         v = (image_h * 0.58) - (y_c / z_c) * focal
 
-        # Screen boundary filtering
         valid_screen = (u >= 0) & (u < image_w) & (v >= 0) & (v < image_h)
         u_valid = u[valid_screen].astype(np.int32)
         v_valid = v[valid_screen].astype(np.int32)
@@ -246,7 +246,6 @@ class Lidar3DPerceptionEngine:
         projected = []
         for i in range(len(u_valid)):
             dist = r_valid[i]
-            # Heatmap colorization: Red (<8m) -> Yellow (<16m) -> Green (<28m) -> Cyan (<45m) -> Blue
             if dist < 8.0:
                 color = (255, 30, 30)
             elif dist < 16.0:
@@ -263,7 +262,6 @@ class Lidar3DPerceptionEngine:
         return projected
 
     def project_lidar_to_camera_image(self, point_cloud: np.ndarray, cam_spec: dict, img_w: int = 300, img_h: int = 170):
-        """Backward-compatible alias for camera projection."""
         cam_id = "FRONT"
         for cid, spec in self.cameras.items():
             if spec.get("yaw") == cam_spec.get("yaw"):

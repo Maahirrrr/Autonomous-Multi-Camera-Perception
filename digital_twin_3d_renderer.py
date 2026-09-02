@@ -1,11 +1,14 @@
 """
 digital_twin_3d_renderer.py — High-Performance Apple-Tesla 3D Digital Twin Visualizer
 ======================================================================================
-Engineered for locked 60 FPS performance:
-  - Fast matrix projection with pre-allocated surfaces and smooth camera damping.
-  - Multi-hypothesis trajectory ribbons with gradient fade.
-  - Dynamic vertical label stacking for zero text occlusion in dense traffic.
-  - Metallic body shading (88% Top, 65% Sides) with realistic alloy wheels.
+Features:
+  - Distinct 3D Vehicle Geometries:
+      * SEMI TRUCK : Heavy commercial trailer + forward cab + dual axle rear wheels + clearance lamps.
+      * SPORTS CAR : Low-slung aerodynamic chassis + carbon fiber rear wing + wide stance.
+      * SEDAN      : Sleek 3-box executive profile + panoramic roof glass.
+  - Accurate Model Type Badging ([TRUCK], [SEDAN], [SPORTS]).
+  - Clean Minimalist Telemetry Pills (Direct vehicle anchoring with zero clutter).
+  - Fast Matrix Projection & Damped Camera Orbit at Locked 60 FPS.
 """
 
 import math
@@ -17,7 +20,7 @@ from traffic_physics_simulator import EgoAutonomousVehicle, TrafficVehicle, Part
 
 
 class DigitalTwin3DRenderer:
-    """Renders the 3D Digital Twin world with minimalist precision and 60 FPS performance."""
+    """Renders the 3D Digital Twin world with distinct vehicle models and locked 60 FPS performance."""
 
     def __init__(self, screen_w: int = 440, screen_h: int = 460):
         self.w = screen_w
@@ -50,11 +53,8 @@ class DigitalTwin3DRenderer:
             sy = random.randint(4, self.sky_h - 8)
             self.stars.append((sx, sy))
 
-        # Reusable Surfaces for Blending
-        self.shadow_surf = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
         self.glow_surf = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
         self.cone_surf = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
-
         self.font_pill = pygame.font.SysFont("consolas", 10, bold=True)
 
     def handle_mouse_orbit(self, event: pygame.event.Event, rect_offset: tuple[int, int]):
@@ -144,7 +144,7 @@ class DigitalTwin3DRenderer:
         surface.blit(self.glow_surf, (0, 0))
         pygame.draw.circle(surface, (230, 240, 255), (moon_x, moon_y), 11)
 
-        # Distant Mountain Silhouette
+        # Distant Mountains
         pts_mountains = [(0, sky_h)]
         for mx in range(0, self.w + 8, 8):
             my = int(sky_h - 14 - 7.5 * math.sin(mx * 0.018) - 3.5 * math.sin(mx * 0.045))
@@ -152,7 +152,6 @@ class DigitalTwin3DRenderer:
         pts_mountains.append((self.w, sky_h))
         pygame.draw.polygon(surface, (14, 20, 32), pts_mountains)
 
-        # Stars
         if weather_mode != "FOG":
             for sx, sy in self.stars:
                 if sy < sky_h - 6:
@@ -162,7 +161,6 @@ class DigitalTwin3DRenderer:
         # 2. 3-LANE HIGHWAY ROADBED
         # -------------------------------------------------------------
         for z_seg in range(75, -20, -6):
-            # Left Grass
             g_l1 = self.project_3d_to_screen(np.array([-30.0, 0.0, float(z_seg)]), ego_x)
             g_l2 = self.project_3d_to_screen(np.array([-7.5, 0.0, float(z_seg)]), ego_x)
             g_l3 = self.project_3d_to_screen(np.array([-7.5, 0.0, float(z_seg - 6)]), ego_x)
@@ -170,7 +168,6 @@ class DigitalTwin3DRenderer:
             if g_l1[0] != -9999 and g_l2[0] != -9999 and g_l3[0] != -9999 and g_l4[0] != -9999:
                 pygame.draw.polygon(surface, (12, 18, 14), [(g_l1[0], g_l1[1]), (g_l2[0], g_l2[1]), (g_l3[0], g_l3[1]), (g_l4[0], g_l4[1])])
 
-            # Right Grass
             g_r1 = self.project_3d_to_screen(np.array([+7.5, 0.0, float(z_seg)]), ego_x)
             g_r2 = self.project_3d_to_screen(np.array([+30.0, 0.0, float(z_seg)]), ego_x)
             g_r3 = self.project_3d_to_screen(np.array([+30.0, 0.0, float(z_seg - 6)]), ego_x)
@@ -178,7 +175,6 @@ class DigitalTwin3DRenderer:
             if g_r1[0] != -9999 and g_r2[0] != -9999 and g_r3[0] != -9999 and g_r4[0] != -9999:
                 pygame.draw.polygon(surface, (12, 18, 14), [(g_r1[0], g_r1[1]), (g_r2[0], g_r2[1]), (g_r3[0], g_r3[1]), (g_r4[0], g_r4[1])])
 
-            # Highway Asphalt
             p1 = np.array([-7.5, 0.0, float(z_seg)])
             p2 = np.array([+7.5, 0.0, float(z_seg)])
             p3 = np.array([+7.5, 0.0, float(z_seg - 6)])
@@ -249,24 +245,23 @@ class DigitalTwin3DRenderer:
             pygame.draw.lines(surface, (0, 229, 255), False, traj_3d, 3)
 
         # -------------------------------------------------------------
-        # 5. DYNAMIC TRAFFIC (Collision-Free Vertical Stacking)
+        # 5. DYNAMIC TRAFFIC (Distinct 3D Models & Direct Vehicle Labels)
         # -------------------------------------------------------------
         all_vehicles = list(traffic)
         all_vehicles.sort(key=lambda v: v.z, reverse=True)
 
-        drawn_labels = []
         for v in all_vehicles:
-            self.draw_3d_vehicle(surface, v, ego_x, frame_idx, drawn_labels)
+            self.draw_3d_vehicle(surface, v, ego_x, frame_idx)
 
         self.draw_3d_ego_vehicle(surface, ego, frame_idx)
 
-    def draw_3d_vehicle(self, surface: pygame.Surface, v: TrafficVehicle, ego_x: float, frame_idx: int, drawn_labels: list):
-        """Draws vehicle with metallic paint, alloy wheels, soft contact shadow, and non-overlapping label."""
+    def draw_3d_vehicle(self, surface: pygame.Surface, v: TrafficVehicle, ego_x: float, frame_idx: int):
+        """Draws distinct 3D models for TRUCK, SPORTS, and SEDAN with matching badges."""
         hw, hl = v.width * 0.5, v.length * 0.5
         h = v.height
         x, z = v.x, v.z
 
-        # 1. Contact Shadow
+        # Contact Shadow
         s_corners = [
             np.array([x - hw - 0.15, 0.02, z - hl - 0.15]),
             np.array([x + hw + 0.15, 0.02, z - hl - 0.15]),
@@ -277,7 +272,7 @@ class DigitalTwin3DRenderer:
         if all(u != -9999 for u, _, _ in s_proj):
             pygame.draw.polygon(surface, (10, 14, 18), [(u, v_p) for u, v_p, _ in s_proj])
 
-        # 2. 3D Body Corners
+        # 3D Bounding Points
         corners = [
             np.array([x - hw, 0.15, z - hl]), # 0
             np.array([x + hw, 0.15, z - hl]), # 1
@@ -294,63 +289,89 @@ class DigitalTwin3DRenderer:
 
         pts = [(u, v_p) for u, v_p, _ in proj]
         v_col = v.color
-
-        # Rear/Front Face
-        pygame.draw.polygon(surface, v_col, [pts[0], pts[1], pts[5], pts[4]])
-        pygame.draw.polygon(surface, (230, 240, 250), [pts[0], pts[1], pts[5], pts[4]], 1)
-
-        # Metallic Top Face (88% brightness)
         top_col = tuple(min(255, int(c * 0.88 + 15)) for c in v_col)
-        pygame.draw.polygon(surface, top_col, [pts[4], pts[5], pts[6], pts[7]])
-
-        # Side Face (65% shadow)
         side_col = tuple(int(c * 0.65) for c in v_col)
-        if x < ego_x:
-            pygame.draw.polygon(surface, side_col, [pts[1], pts[2], pts[6], pts[5]])
+
+        if v.model_type == "TRUCK":
+            # SEMI TRUCK: Tall Box Trailer + Lower Cab
+            pygame.draw.polygon(surface, v_col, [pts[0], pts[1], pts[5], pts[4]])
+            pygame.draw.polygon(surface, (230, 240, 250), [pts[0], pts[1], pts[5], pts[4]], 1)
+            pygame.draw.polygon(surface, top_col, [pts[4], pts[5], pts[6], pts[7]])
+
+            if x < ego_x:
+                pygame.draw.polygon(surface, side_col, [pts[1], pts[2], pts[6], pts[5]])
+            else:
+                pygame.draw.polygon(surface, side_col, [pts[0], pts[3], pts[7], pts[4]])
+
+            pygame.draw.circle(surface, (255, 185, 30), (pts[4][0] + 4, pts[4][1] + 4), 2)
+            pygame.draw.circle(surface, (255, 185, 30), (pts[5][0] - 4, pts[5][1] + 4), 2)
+
+            for wx, wy in (pts[0], pts[1]):
+                pygame.draw.circle(surface, (12, 12, 12), (wx, wy), 5)
+                pygame.draw.circle(surface, (160, 175, 195), (wx, wy), 3, 1)
+
+        elif v.model_type == "SPORTS":
+            # SPORTS CAR: Low Profile + Rear Wing Spoiler
+            pygame.draw.polygon(surface, v_col, [pts[0], pts[1], pts[5], pts[4]])
+            pygame.draw.polygon(surface, (230, 240, 250), [pts[0], pts[1], pts[5], pts[4]], 1)
+            pygame.draw.polygon(surface, top_col, [pts[4], pts[5], pts[6], pts[7]])
+
+            if x < ego_x:
+                pygame.draw.polygon(surface, side_col, [pts[1], pts[2], pts[6], pts[5]])
+            else:
+                pygame.draw.polygon(surface, side_col, [pts[0], pts[3], pts[7], pts[4]])
+
+            pygame.draw.line(surface, (245, 245, 250), (pts[4][0] - 4, pts[4][1] - 4), (pts[5][0] + 4, pts[5][1] - 4), 2)
+            pygame.draw.line(surface, (30, 30, 30), (pts[4][0], pts[4][1]), (pts[4][0] - 2, pts[4][1] - 4), 2)
+            pygame.draw.line(surface, (30, 30, 30), (pts[5][0], pts[5][1]), (pts[5][0] + 2, pts[5][1] - 4), 2)
+
+            for wx, wy in (pts[0], pts[1]):
+                pygame.draw.circle(surface, (12, 12, 12), (wx, wy), 3)
+
         else:
-            pygame.draw.polygon(surface, side_col, [pts[0], pts[3], pts[7], pts[4]])
+            # SEDAN: Standard 3-Box Sedan
+            pygame.draw.polygon(surface, v_col, [pts[0], pts[1], pts[5], pts[4]])
+            pygame.draw.polygon(surface, (230, 240, 250), [pts[0], pts[1], pts[5], pts[4]], 1)
+            pygame.draw.polygon(surface, top_col, [pts[4], pts[5], pts[6], pts[7]])
 
-        # Tinted Glass Windows
-        u_mid_l = (pts[0][0] + pts[4][0]) // 2
-        u_mid_r = (pts[1][0] + pts[5][0]) // 2
-        v_mid_top = (pts[4][1] + pts[5][1]) // 2 + 2
-        v_mid_bot = (pts[0][1] + pts[1][1]) // 2 - 2
-        if v_mid_bot > v_mid_top:
-            pygame.draw.polygon(surface, (38, 48, 65), [(u_mid_l, v_mid_top), (u_mid_r, v_mid_top),
-                                                        (u_mid_r, v_mid_bot), (u_mid_l, v_mid_bot)])
+            if x < ego_x:
+                pygame.draw.polygon(surface, side_col, [pts[1], pts[2], pts[6], pts[5]])
+            else:
+                pygame.draw.polygon(surface, side_col, [pts[0], pts[3], pts[7], pts[4]])
 
-        # Multi-Spoke Alloy Wheels
-        for wx, wy in (pts[0], pts[1]):
-            pygame.draw.circle(surface, (12, 12, 12), (wx, wy), 4)
-            pygame.draw.circle(surface, (160, 175, 195), (wx, wy), 2, 1)
+            u_mid_l = (pts[0][0] + pts[4][0]) // 2
+            u_mid_r = (pts[1][0] + pts[5][0]) // 2
+            v_mid_top = (pts[4][1] + pts[5][1]) // 2 + 2
+            v_mid_bot = (pts[0][1] + pts[1][1]) // 2 - 2
+            if v_mid_bot > v_mid_top:
+                pygame.draw.polygon(surface, (38, 48, 65), [(u_mid_l, v_mid_top), (u_mid_r, v_mid_top),
+                                                            (u_mid_r, v_mid_bot), (u_mid_l, v_mid_bot)])
+
+            for wx, wy in (pts[0], pts[1]):
+                pygame.draw.circle(surface, (12, 12, 12), (wx, wy), 4)
+                pygame.draw.circle(surface, (160, 175, 195), (wx, wy), 2, 1)
 
         # LED Taillights
         tl_col = (255, 35, 35) if v.is_braking else (205, 20, 20)
         pygame.draw.circle(surface, tl_col, (pts[0][0] + 4, pts[0][1] - 6), 3)
         pygame.draw.circle(surface, tl_col, (pts[1][0] - 4, pts[1][1] - 6), 3)
 
-        # Collision-Free Frosted Pill Tag
-        lbl_text = f"{v.id} [{v.speed_kmh:.0f} km/h]"
-        lbl_surf = self.font_pill.render(lbl_text, True, (215, 235, 255))
-        pill_w = lbl_surf.get_width() + 10
-        pill_h = 16
+        # Direct Clean Telemetry Pill (Tracked Obstacles 2m < z < 35m)
+        if 2.0 < v.z < 35.0:
+            lbl_text = f"[{v.model_type}] {v.id.replace('_', ' ')} [{v.speed_kmh:.0f} km/h]"
+            lbl_surf = self.font_pill.render(lbl_text, True, (215, 235, 255))
+            pill_w = lbl_surf.get_width() + 10
+            pill_h = 16
 
-        u_top = (pts[4][0] + pts[5][0]) // 2
-        u_top = max(pill_w // 2 + 6, min(self.w - pill_w // 2 - 6, u_top))
-        v_top = min(pts[4][1], pts[5][1]) - 14
+            u_top = (pts[4][0] + pts[5][0]) // 2
+            u_top = max(pill_w // 2 + 6, min(self.w - pill_w // 2 - 6, u_top))
+            v_top = min(pts[4][1], pts[5][1]) - 14
 
-        # Dynamic vertical stacking if multiple vehicles share the same horizontal band
-        for prev_u, prev_v in drawn_labels:
-            if abs(u_top - prev_u) < 90 and abs(v_top - prev_v) < 18:
-                v_top = prev_v - 18
-
-        drawn_labels.append((u_top, v_top))
-
-        if v_top > 16:
-            pill_rect = pygame.Rect(u_top - pill_w // 2, v_top - 2, pill_w, pill_h)
-            pygame.draw.rect(surface, (10, 14, 22), pill_rect, border_radius=4)
-            pygame.draw.rect(surface, (40, 52, 75), pill_rect, 1, border_radius=4)
-            surface.blit(lbl_surf, (u_top - lbl_surf.get_width() // 2, v_top))
+            if 20 < v_top < self.h - 40:
+                pill_rect = pygame.Rect(u_top - pill_w // 2, v_top - 2, pill_w, pill_h)
+                pygame.draw.rect(surface, (10, 14, 22), pill_rect, border_radius=4)
+                pygame.draw.rect(surface, (40, 52, 75), pill_rect, 1, border_radius=4)
+                surface.blit(lbl_surf, (u_top - lbl_surf.get_width() // 2, v_top))
 
     def draw_3d_ego_vehicle(self, surface: pygame.Surface, ego: EgoAutonomousVehicle, frame_idx: int):
         """Draws hero Tesla Model S with Deep Metallic Blue body and panoramic glass."""
@@ -359,7 +380,6 @@ class DigitalTwin3DRenderer:
         h = ego.height
         x, z = ego.x, ego.z
 
-        # Contact Shadow
         s_corners = [
             np.array([x - hw - 0.2, 0.02, z - hl - 0.2]),
             np.array([x + hw + 0.2, 0.02, z - hl - 0.2]),

@@ -1,11 +1,12 @@
 """
 multi_cam_simulator.py — High-Performance Apple-Tesla Surround Camera Simulator
 ================================================================================
-Engineered for locked 60 FPS performance:
-  - Vectorized precomputed sky/road gradients (0.05ms per camera frame).
-  - Anti-aliased 3-lane perspective projection with lateral ego tracking.
-  - Multi-vehicle label collision resolution with dynamic vertical stacking.
-  - Protected optical telemetry zones with crisp HUD overlays.
+Features:
+  - 4 Synchronized Surround Feeds: FRONT, LEFT, RIGHT, REAR (Rearview Mirror).
+  - Distinct 3D Vehicle Renderers (Semi Truck Box + Cab, Sports Coupe, Sleek Sedan).
+  - Accurate Model Type Badging ([TRUCK], [SEDAN], [SPORTS]).
+  - Vectorized precomputed sky/road gradients for locked 60 FPS performance.
+  - Multi-vehicle dynamic label stacking and collision-free HUD placement.
 """
 
 import math
@@ -17,7 +18,7 @@ from lidar_3d_pointcloud_engine import Lidar3DPerceptionEngine
 
 
 class MultiCameraSimulator:
-    """Simulates 4 surround HDR cameras with vector-optimized rendering for locked 60 FPS."""
+    """Simulates 4 surround HDR cameras with accurate vehicle classifications and locked 60 FPS."""
 
     def __init__(self, width: int = 380, height: int = 135):
         self.w = width
@@ -33,7 +34,6 @@ class MultiCameraSimulator:
         self.bg_fog = self._precompute_background(night=False, fog=True, rain=False)
         self.bg_rain = self._precompute_background(night=False, fog=False, rain=True)
 
-        # Lens droplets for rain mode
         random.seed(42)
         self.droplets = [
             (random.randint(10, self.w - 10), random.randint(10, self.h - 10), random.randint(2, 4))
@@ -123,7 +123,7 @@ class MultiCameraSimulator:
                 night_mode=night_mode
             )
 
-            # Project 3D LiDAR point cloud returns onto camera image (Protected Telemetry Zone)
+            # Protected Optical Telemetry Zone for LiDAR points
             if render_lidar_on_cams and lidar_engine is not None and point_cloud is not None and len(point_cloud) > 0:
                 pts_2d = lidar_engine.project_points_to_camera(point_cloud, cam_id, self.w, self.h)
                 for u, v, color, _ in pts_2d:
@@ -143,7 +143,6 @@ class MultiCameraSimulator:
         weather_mode: str,
         night_mode: bool
     ) -> np.ndarray:
-        # Fast copy of precomputed background
         frame = base_bg.copy()
         horizon_y = self.horizon_y
         focal = self.focal
@@ -160,7 +159,7 @@ class MultiCameraSimulator:
             sign_dir = 1.0 if cam_id == "FRONT" else -1.0
             u_center = self.w * 0.5
 
-            # Solid Left Yellow Divider (X = -5.8m)
+            # Left Solid Yellow Line (X = -5.8m)
             line_pts_left = []
             for z_m in np.arange(2.0, 50.0, 3.0):
                 rel_x = (-5.8 - ego_x) * sign_dir
@@ -171,7 +170,7 @@ class MultiCameraSimulator:
             if len(line_pts_left) > 1:
                 cv2.polylines(frame, [np.array(line_pts_left, dtype=np.int32)], False, yellow_divider, 2, cv2.LINE_AA)
 
-            # Solid Right White Line (X = +5.8m)
+            # Right Solid White Line (X = +5.8m)
             line_pts_right = []
             for z_m in np.arange(2.0, 50.0, 3.0):
                 rel_x = (5.8 - ego_x) * sign_dir
@@ -208,11 +207,17 @@ class MultiCameraSimulator:
             cv2.line(frame, (u_edge, horizon_y + 20), (self.w, horizon_y + 20), (90, 105, 125), 2)
 
         # -------------------------------------------------------------
-        # 2. DYNAMIC VEHICLES (With Multi-Vehicle Label Stacking)
+        # 2. DISTINCT 3D VEHICLE MODELS (TRUCK, SPORTS, SEDAN)
         # -------------------------------------------------------------
         visible_vehicles = []
         for obj in dynamic_objects:
-            ox, oz, ow, ol, label, col_rgb = obj
+            if len(obj) == 8:
+                ox, oz, ow, ol, label, col_rgb, m_type, m_h = obj
+            else:
+                ox, oz, ow, ol, label, col_rgb = obj[:6]
+                m_type = "TRUCK" if "TRUCK" in label else ("SPORTS" if "SPORTS" in label else "SEDAN")
+                m_h = 3.5 if m_type == "TRUCK" else (1.30 if m_type == "SPORTS" else 1.45)
+
             in_view = False
             cam_x, cam_z = 0.0, 0.0
 
@@ -233,44 +238,65 @@ class MultiCameraSimulator:
                 u = int((self.w * 0.5) + (cam_x / cam_z) * focal)
                 v = int(horizon_y + (cam_h / cam_z) * focal)
                 bw = max(8, int((ow / cam_z) * focal))
-                bh = max(6, int((1.65 / cam_z) * focal))
+                bh = max(6, int((m_h / cam_z) * focal))
                 if -bw < u < self.w + bw and horizon_y < v < self.h + bh:
-                    visible_vehicles.append((cam_z, u, v, bw, bh, label, col_rgb))
+                    visible_vehicles.append((cam_z, u, v, bw, bh, label, col_rgb, m_type, m_h))
 
-        # Sort far to near
         visible_vehicles.sort(key=lambda item: item[0], reverse=True)
 
         drawn_labels = []
-        for cam_z, u, v, bw, bh, label, col_rgb in visible_vehicles:
+        for cam_z, u, v, bw, bh, label, col_rgb, m_type, m_h in visible_vehicles:
             veh_rgb = col_rgb if col_rgb else (218, 35, 38)
-            dark_rgb = tuple(int(c * 0.68) for c in veh_rgb)
-            top_h = max(2, int(bh * 0.32))
+            dark_rgb = tuple(int(c * 0.65) for c in veh_rgb)
 
-            # 3D Shaded Box
-            cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v - bh + top_h), veh_rgb, -1)
-            cv2.rectangle(frame, (u - bw//2, v - bh + top_h), (u + bw//2, v), dark_rgb, -1)
-            cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v), (240, 245, 255), 1)
+            if m_type == "TRUCK":
+                # SEMI TRUCK: Tall Cargo Box Trailer + Cab
+                trailer_h = int(bh * 0.78)
+                cab_h = int(bh * 0.45)
+                # Trailer Body
+                cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v - bh + trailer_h), veh_rgb, -1)
+                cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v), (240, 245, 255), 1)
+                # Top Clearance Marker Lights (Amber)
+                cv2.circle(frame, (u - bw//2 + 3, v - bh + 3), 2, (0, 185, 255), -1)
+                cv2.circle(frame, (u + bw//2 - 3, v - bh + 3), 2, (0, 185, 255), -1)
+                # Dual Rear Wheels
+                cv2.circle(frame, (u - bw//2 + 4, v), 3, (12, 12, 12), -1)
+                cv2.circle(frame, (u + bw//2 - 4, v), 3, (12, 12, 12), -1)
 
-            # Windshield Glass
-            ws_w = int(bw * 0.75)
-            ws_h = max(2, int(top_h * 0.75))
-            ws_x = u - ws_w // 2
-            ws_y = v - bh + 2
-            cv2.rectangle(frame, (ws_x, ws_y), (ws_x + ws_w, ws_y + ws_h), (38, 48, 65), -1)
+            elif m_type == "SPORTS":
+                # SPORTS CAR: Low-Slung Wide Stance + Rear Spoiler Wing
+                cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v), veh_rgb, -1)
+                cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v), (240, 245, 255), 1)
+                # Rear Wing Spoiler
+                cv2.line(frame, (u - bw//2 - 2, v - bh - 2), (u + bw//2 + 2, v - bh - 2), (245, 245, 250), 2)
+                # Low Profile Wheels
+                cv2.circle(frame, (u - bw//2 + 3, v), 2, (12, 12, 12), -1)
+                cv2.circle(frame, (u + bw//2 - 3, v), 2, (12, 12, 12), -1)
 
-            # Wheels
-            cv2.circle(frame, (u - bw//2 + 3, v), 3, (12, 12, 12), -1)
-            cv2.circle(frame, (u + bw//2 - 3, v), 3, (12, 12, 12), -1)
+            else:
+                # SEDAN: Sleek 3-Box Sedan Profile
+                top_h = max(2, int(bh * 0.35))
+                cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v - bh + top_h), veh_rgb, -1)
+                cv2.rectangle(frame, (u - bw//2, v - bh + top_h), (u + bw//2, v), dark_rgb, -1)
+                cv2.rectangle(frame, (u - bw//2, v - bh), (u + bw//2, v), (240, 245, 255), 1)
+                # Windshield Glass
+                ws_w = int(bw * 0.75)
+                ws_h = max(2, int(top_h * 0.75))
+                cv2.rectangle(frame, (u - ws_w//2, v - bh + 2), (u + ws_w//2, v - bh + 2 + ws_h), (38, 48, 65), -1)
+                # Wheels
+                cv2.circle(frame, (u - bw//2 + 3, v), 3, (12, 12, 12), -1)
+                cv2.circle(frame, (u + bw//2 - 3, v), 3, (12, 12, 12), -1)
 
-            # LED Taillights / Headlights
+            # LED Taillights
             for tx in (u - bw//2 + 3, u + bw//2 - 3):
                 cv2.circle(frame, (tx, v - bh//3), 3, (245, 35, 35), -1)
 
-            # Bounding Bracket (Tesla Cyan)
-            cv2.rectangle(frame, (u - bw//2 - 2, v - bh - 2), (u + bw//2 + 2, v + 2), (0, 212, 255), 1)
+            # Tesla Cyan Bounding Bracket
+            cv2.rectangle(frame, (u - bw//2 - 2, v - bh - 2), (u + bw//2 + 2, v + 2), (0, 229, 255), 1)
 
-            # Collision-Free Smart Label Placement
-            tag_str = f"{label} [{cam_z:.1f}m]"
+            # Accurate Label with Type Tag
+            type_tag = f"[{m_type}] "
+            tag_str = f"{type_tag}{label} [{cam_z:.1f}m]"
             tag_w = len(tag_str) * 6 + 6
             tag_x = max(6, min(self.w - tag_w - 6, u - tag_w // 2))
             tag_y = v - bh - 4
@@ -281,24 +307,12 @@ class MultiCameraSimulator:
 
             drawn_labels.append((tag_x, tag_y))
             if tag_y > 14:
-                # Translucent pill under label
                 cv2.rectangle(frame, (tag_x - 2, tag_y - 9), (tag_x + tag_w, tag_y + 3), (10, 14, 22), -1)
                 cv2.putText(frame, tag_str, (tag_x, tag_y),
                             cv2.FONT_HERSHEY_DUPLEX, 0.25, (0, 229, 255), 1, cv2.LINE_AA)
 
         # -------------------------------------------------------------
-        # 3. RAIN / FOG ATMOSPHERIC EFFECTS
-        # -------------------------------------------------------------
-        if weather_mode == "RAIN":
-            for _ in range(16):
-                rx = random.randint(0, self.w)
-                ry = random.randint(0, self.h)
-                cv2.line(frame, (rx, ry), (rx - 2, ry + 6), (170, 190, 215), 1)
-            for dx, dy, dr in self.droplets[:10]:
-                cv2.circle(frame, (dx, dy), dr, (215, 230, 250), 1)
-
-        # -------------------------------------------------------------
-        # 4. HUD BEZEL & TELEMETRY
+        # 3. HUD BEZEL & TELEMETRY
         # -------------------------------------------------------------
         cv2.rectangle(frame, (0, 0), (self.w - 1, self.h - 1), (30, 35, 47), 1)
 
@@ -318,7 +332,6 @@ class MultiCameraSimulator:
             cv2.circle(frame, (self.w - 12, 11), 3, (255, 59, 48), -1)
             cv2.putText(frame, "REC", (self.w - 36, 14), cv2.FONT_HERSHEY_DUPLEX, 0.25, (255, 59, 48), 1, cv2.LINE_AA)
 
-        # Protected Telemetry Bar at Bottom
         cv2.putText(frame, "f/1.8 | 1/500s | ISO 400", (8, self.h - 6),
                     cv2.FONT_HERSHEY_DUPLEX, 0.25, (135, 148, 168), 1, cv2.LINE_AA)
 

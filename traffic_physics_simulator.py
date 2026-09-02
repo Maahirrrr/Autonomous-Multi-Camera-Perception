@@ -4,16 +4,12 @@ traffic_physics_simulator.py — Real-Time Tesla Level 4 Autopilot Physics Engin
 Mathematical Models & Algorithms:
   1. Intelligent Driver Model (IDM) Longitudinal Control:
      a = a_max * [ 1 - (v / v0)^4 - (s*(v, delta_v) / s)^2 ]
-     where s* = s0 + v * T + (v * delta_v) / (2 * sqrt(a_max * b))
   2. MOBIL (Minimizing Overall Braking Induced by Lane changes):
      Incentive criterion with politeness factor p = 0.15 and threshold d_a = 0.20 m/s^2.
   3. 5th-Order Quintic Polynomial Lateral Trajectory:
      x(tau) = x_start + delta_x * (10*tau^3 - 15*tau^4 + 6*tau^5), tau in [0, 1]
-     Analytic velocity: x_dot(tau) = (delta_x / T_dur) * (30*tau^2 - 60*tau^3 + 30*tau^4)
-     Analytic acceleration: x_ddot(tau) = (delta_x / T_dur^2) * (60*tau - 180*tau^2 + 120*tau^3)
-  4. Two-Track Ackermann Steering Kinematics:
-     delta_inner = arctan( L / (R - t/2) ), delta_outer = arctan( L / (R + t/2) )
-  5. 2nd-Order Critical Suspension Damping & Exponential Moving Average (EMA) G-Force History.
+  4. Two-Track Ackermann Steering Kinematics.
+  5. Distinct Vehicle Classes (TRUCK, SEDAN, SPORTS, SUV) with Staggered Respawn & Collision Avoidance.
 """
 
 import math
@@ -146,7 +142,7 @@ class TrafficVehicle:
         z_pos: float = 0.0,
         speed_kmh: float = 75.0,
         target_speed_kmh: float = 80.0,
-        color: tuple[int, int, int] = (218, 35, 38), # Tesla Crimson Red
+        color: tuple[int, int, int] = (218, 35, 38),
         width: float = 1.92,
         length: float = 4.80,
         height: float = 1.50,
@@ -163,27 +159,35 @@ class TrafficVehicle:
         self.width = width
         self.length = length
         self.height = height
-        self.model_type = model_type
+        self.model_type = model_type.upper()
 
-        # Refined IDM Parameters
         self.v0 = target_speed_kmh / 3.6
-        self.T = 1.2 # Safe time headway (s)
-        self.a_max = 2.4 # Maximum acceleration (m/s^2)
-        self.b_comf = 3.0 # Comfortable deceleration (m/s^2)
-        self.s0 = 3.0 # Standstill safe distance (m)
+        if self.model_type == "TRUCK":
+            self.T = 1.6
+            self.a_max = 1.4
+            self.b_comf = 2.0
+            self.s0 = 5.0
+        elif self.model_type == "SPORTS":
+            self.T = 1.0
+            self.a_max = 3.2
+            self.b_comf = 3.6
+            self.s0 = 2.5
+        else:
+            self.T = 1.2
+            self.a_max = 2.4
+            self.b_comf = 3.0
+            self.s0 = 3.0
         self.delta_idm = 4.0
 
-        # Dynamics & Suspension
         self.accel = 0.0
         self.is_braking = False
         self.blinker = "OFF"
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
 
-        # Quintic Polynomial Spline
         self.is_changing_lane = False
         self.lc_progress = 0.0
-        self.lc_duration = 2.8
+        self.lc_duration = 3.2 if self.model_type == "TRUCK" else 2.6
         self.lc_start_x = self.x
         self.lc_target_x = self.x
 
@@ -222,7 +226,7 @@ class TrafficVehicle:
             accel = self.a_max * (1.0 - (v / self.v0) ** self.delta_idm - (s_star / s) ** 2)
         else:
             accel = self.a_max * (1.0 - (v / self.v0) ** self.delta_idm)
-        return float(np.clip(accel, -7.0, self.a_max))
+        return float(np.clip(accel, -6.0, self.a_max))
 
     def update_prediction_fan(self):
         dt_fan = 0.35
@@ -283,11 +287,9 @@ class TrafficVehicle:
         self.speed_kmh = new_speed_mps * 3.6
         self.is_braking = self.accel < -1.2
 
-        # Tighter Critical Suspension Damping
         target_pitch = np.clip(self.accel * -0.75, -2.8, 2.8)
         self.pitch_deg += (target_pitch - self.pitch_deg) * 8.5 * dt
 
-        # Quintic Polynomial Lane Change
         if self.is_changing_lane:
             self.lc_progress += dt / self.lc_duration
             if self.lc_progress >= 0.9999:
@@ -325,7 +327,6 @@ class EgoAutonomousVehicle:
         self.target_cruise_speed_kmh = 105.0
         self.overtake_cruise_speed_kmh = 115.0
 
-        # Geometry & Kinematics (Tesla Model S Plaid)
         self.width = 1.96
         self.length = 4.97
         self.height = 1.44
@@ -336,7 +337,6 @@ class EgoAutonomousVehicle:
         self.state = "LANE_KEEP"
         self.manual_override = False
 
-        # Ackermann Angles
         self.steering_angle_deg = 0.0
         self.steering_inner_deg = 0.0
         self.steering_outer_deg = 0.0
@@ -345,19 +345,16 @@ class EgoAutonomousVehicle:
         self.lat_jerk_gs = 0.0
         self.last_lat_accel_g = 0.0
 
-        # Filtered G-Force History
         self.g_history: list[tuple[float, float]] = [(0.0, 0.0)] * 150
         self.smoothed_lat_g = 0.0
         self.smoothed_long_g = 0.0
 
-        # Damping & Suspension
         self.pitch_deg = 0.0
         self.roll_deg = 0.0
         self.blinker = "OFF"
         self.is_braking = False
         self.accel_mps2 = 0.0
 
-        # Quintic Trajectory Parameters
         self.lc_progress = 0.0
         self.lc_duration = 3.0
         self.lc_start_x = 0.0
@@ -402,12 +399,10 @@ class EgoAutonomousVehicle:
             self.state = "LANE_CHANGE_RIGHT"
 
     def step(self, dt: float):
-        # 1. 5th-Order Quintic Polynomial Lateral Trajectory
         if self.state in ("LANE_CHANGE_LEFT", "LANE_CHANGE_RIGHT"):
             self.lc_progress += dt / self.lc_duration
             t = min(1.0, self.lc_progress)
 
-            # Quintic Spline: x(tau) = x_0 + dx * (10tau^3 - 15tau^4 + 6tau^5)
             s = 10.0 * (t ** 3) - 15.0 * (t ** 4) + 6.0 * (t ** 5)
             s_dot = (30.0 * (t ** 2) - 60.0 * (t ** 3) + 30.0 * (t ** 4)) / self.lc_duration
             s_ddot = (60.0 * t - 180.0 * (t ** 2) + 120.0 * (t ** 3)) / (self.lc_duration ** 2)
@@ -454,7 +449,6 @@ class EgoAutonomousVehicle:
         target_pitch = np.clip((self.accel_mps2 / 9.81) * -0.75, -2.5, 2.5)
         self.pitch_deg += (target_pitch - self.pitch_deg) * 8.5 * dt
 
-        # EMA-Smoothed G-History
         raw_long_g = self.accel_mps2 / 9.81
         alpha_ema = 0.18
         self.smoothed_lat_g = (1 - alpha_ema) * self.smoothed_lat_g + alpha_ema * self.lat_accel_g
@@ -489,45 +483,54 @@ class HighwayTrafficEngine:
         self.traffic_vehicles.clear()
 
         lead_car = TrafficVehicle(
-            veh_id="LEAD_CAR_1",
+            veh_id="LEAD_SEDAN",
             lane_idx=0,
-            z_pos=22.0,
+            z_pos=24.0,
             speed_kmh=68.0,
             target_speed_kmh=70.0,
-            color=(218, 35, 38), # Tesla Crimson Red
+            color=(218, 35, 38),
+            width=1.92,
+            length=4.80,
+            height=1.45,
             model_type="SEDAN"
         )
 
         fast_sedan = TrafficVehicle(
-            veh_id="FAST_SEDAN_LEFT",
+            veh_id="FAST_SEDAN",
             lane_idx=-1,
-            z_pos=38.0,
+            z_pos=48.0,
             speed_kmh=102.0,
             target_speed_kmh=105.0,
-            color=(240, 242, 245), # Pearl White
+            color=(240, 242, 245),
+            width=1.92,
+            length=4.80,
+            height=1.45,
             model_type="SEDAN"
         )
 
         semi_truck = TrafficVehicle(
-            veh_id="SEMI_TRUCK_RIGHT",
+            veh_id="SEMI_TRUCK",
             lane_idx=1,
-            z_pos=16.0,
+            z_pos=18.0,
             speed_kmh=62.0,
             target_speed_kmh=65.0,
-            color=(28, 135, 72), # Forest Green
-            width=2.55,
-            length=11.2,
-            height=3.4,
+            color=(28, 135, 72),
+            width=2.60,
+            length=12.0,
+            height=3.50,
             model_type="TRUCK"
         )
 
         rear_sports = TrafficVehicle(
-            veh_id="SPORTS_REAR_LEFT",
+            veh_id="SPORTS_COUPE",
             lane_idx=-1,
-            z_pos=-24.0,
+            z_pos=-28.0,
             speed_kmh=98.0,
             target_speed_kmh=100.0,
-            color=(245, 170, 25), # Sunset Amber
+            color=(245, 170, 25),
+            width=1.86,
+            length=4.40,
+            height=1.30,
             model_type="SPORTS"
         )
 
@@ -542,12 +545,21 @@ class HighwayTrafficEngine:
             rel_v_mps = v.speed_mps - self.ego.speed_mps
             v.z += rel_v_mps * dt
 
-            if v.z > 85.0:
-                v.z = -35.0
-                v.speed_kmh = random.uniform(85.0, 105.0)
-            elif v.z < -45.0:
-                v.z = 65.0
-                v.speed_kmh = random.uniform(65.0, 75.0)
+            # Staggered respawn with non-overlapping slot allocation
+            if v.z > 90.0:
+                lane_slots = {"TRUCK": (1, -38.0, 62.0), "SPORTS": (-1, -28.0, 98.0), "SEDAN": (0, -32.0, 75.0)}
+                slot_lane, slot_z, slot_spd = lane_slots.get(v.model_type, (v.lane_idx, -35.0, 80.0))
+                v.lane_idx = slot_lane
+                v.x = float(slot_lane * 3.75)
+                v.z = slot_z
+                v.speed_kmh = slot_spd
+            elif v.z < -50.0:
+                lane_slots = {"TRUCK": (1, 65.0, 62.0), "SPORTS": (-1, 75.0, 102.0), "SEDAN": (0, 55.0, 72.0)}
+                slot_lane, slot_z, slot_spd = lane_slots.get(v.model_type, (v.lane_idx, 60.0, 75.0))
+                v.lane_idx = slot_lane
+                v.x = float(slot_lane * 3.75)
+                v.z = slot_z
+                v.speed_kmh = slot_spd
 
             v.step(dt)
             self.particle_emitter.emit_exhaust(v.x, 0.25, v.z - v.length * 0.5, v.speed_kmh)
@@ -573,12 +585,8 @@ class HighwayTrafficEngine:
         same_lane_leads.sort(key=lambda v: v.z)
         lead_car = same_lane_leads[0] if same_lane_leads else None
 
-        # MOBIL Politeness Factor p = 0.15
-        p_politeness = 0.15
-        d_a_threshold = 0.20 # m/s^2
-
         if self.ego.state == "LANE_KEEP":
-            if lead_car and lead_car.z < 26.0 and lead_car.speed_kmh < self.ego.target_cruise_speed_kmh - 8.0:
+            if lead_car and lead_car.z < 28.0 and lead_car.speed_kmh < self.ego.target_cruise_speed_kmh - 8.0:
                 self.ego.state = "CHECK_OVERTAKE"
                 self.ego.overtake_target_id = lead_car.id
                 self.log_event(f"OVERTAKE INITIATED — TARGET: {lead_car.id}")
@@ -621,8 +629,8 @@ class HighwayTrafficEngine:
     def _compute_idm_accel(self, v: float, v0: float, s: float = None, v_lead: float = None) -> float:
         a_max = 2.4
         b_comf = 3.0
-        T = 1.2 # Refined safe headway
-        s0 = 3.0 # Minimum standstill gap
+        T = 1.2
+        s0 = 3.0
         delta = 4.0
 
         if s is not None and s > 0.0:
@@ -644,5 +652,5 @@ class HighwayTrafficEngine:
         for v in self.traffic_vehicles:
             rel_x = v.x - self.ego.x
             rel_z = v.z
-            objs.append((rel_x, rel_z, v.width, v.length, v.id, v.color))
+            objs.append((rel_x, rel_z, v.width, v.length, v.id, v.color, v.model_type, v.height))
         return objs
