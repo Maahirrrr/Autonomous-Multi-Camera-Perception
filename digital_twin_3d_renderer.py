@@ -5,7 +5,7 @@ Features:
   - Metallic Body Paint Shading (88% Top, 65% Side with Specular Light Glints).
   - Soft Volumetric Headlight Cones & Ambient Occlusion Ground Shadows.
   - Multi-Spoke Alloy Wheels with Brake Calipers & Hub Accents.
-  - Smart Dynamic Label Placement to Prevent Text Collisions.
+  - Viewport-Clamped Frosted Vehicle Pills (Zero label truncation).
   - 3-Lane Highway Geometry (Solid Yellow X=-5.8m, Dashed X=±1.875m, Solid White X=+5.8m).
 """
 
@@ -30,7 +30,7 @@ class DigitalTwin3DRenderer:
         self.cx = self.w * 0.5
         self.cy = self.h * 0.52
 
-        # Camera Orbit & Target Values (for smooth interpolation)
+        # Camera Orbit & Target Values
         self.cam_dist_m = 9.6
         self.cam_height_m = 4.2
         self.cam_pitch_deg = 14.0
@@ -68,7 +68,6 @@ class DigitalTwin3DRenderer:
             self.last_mouse_pos = event.pos
 
     def update_camera_smoothing(self, dt: float = 0.016):
-        """Smoothly interpolates camera rotation for buttery-smooth orbit dynamics."""
         self.cam_yaw_deg += (self.target_yaw_deg - self.cam_yaw_deg) * 12.0 * dt
         self.cam_pitch_deg += (self.target_pitch_deg - self.cam_pitch_deg) * 12.0 * dt
 
@@ -161,7 +160,7 @@ class DigitalTwin3DRenderer:
         # 2. HIGHWAY ASPHALT & 3 FULL PERSPECTIVE LANES
         # -------------------------------------------------------------
         for z_seg in range(80, -25, -5):
-            # Left Grass (X = -35m to -7.5m)
+            # Left Grass
             g_l1 = self.project_3d_to_screen(np.array([-35.0, 0.0, float(z_seg)]), ego_x)
             g_l2 = self.project_3d_to_screen(np.array([-7.5, 0.0, float(z_seg)]), ego_x)
             g_l3 = self.project_3d_to_screen(np.array([-7.5, 0.0, float(z_seg - 5)]), ego_x)
@@ -169,7 +168,7 @@ class DigitalTwin3DRenderer:
             if g_l1[0] != -9999 and g_l2[0] != -9999 and g_l3[0] != -9999 and g_l4[0] != -9999:
                 pygame.draw.polygon(surface, (12, 18, 14), [(g_l1[0], g_l1[1]), (g_l2[0], g_l2[1]), (g_l3[0], g_l3[1]), (g_l4[0], g_l4[1])])
 
-            # Right Grass (X = +7.5m to +35m)
+            # Right Grass
             g_r1 = self.project_3d_to_screen(np.array([+7.5, 0.0, float(z_seg)]), ego_x)
             g_r2 = self.project_3d_to_screen(np.array([+35.0, 0.0, float(z_seg)]), ego_x)
             g_r3 = self.project_3d_to_screen(np.array([+35.0, 0.0, float(z_seg - 5)]), ego_x)
@@ -246,7 +245,7 @@ class DigitalTwin3DRenderer:
                         smoke_surf = pygame.Surface((int(p.size * 2), int(p.size * 2)), pygame.SRCALPHA)
                         pygame.draw.circle(smoke_surf, (220, 230, 240, 40), (int(p.size), int(p.size)), int(p.size))
                         surface.blit(smoke_surf, (u_p - int(p.size), v_p - int(p.size)))
-                    else: # Exhaust
+                    else:
                         pygame.draw.circle(surface, p.color, (u_p, v_p), max(1, int(p.size * 0.70)))
 
         # -------------------------------------------------------------
@@ -265,7 +264,7 @@ class DigitalTwin3DRenderer:
                 pygame.draw.lines(surface, (0, 212, 255), False, traj_3d, 3)
 
         # -------------------------------------------------------------
-        # 6. DYNAMIC TRAFFIC VEHICLES (With Label Collision Avoidance)
+        # 6. DYNAMIC TRAFFIC VEHICLES (With Viewport-Clamped Frosted Pills)
         # -------------------------------------------------------------
         all_vehicles = list(traffic)
         all_vehicles.sort(key=lambda v: v.z, reverse=True)
@@ -284,7 +283,7 @@ class DigitalTwin3DRenderer:
         surface.blit(fog_surf, (0, sky_h - 14))
 
     def draw_3d_vehicle(self, surface: pygame.Surface, v: TrafficVehicle, ego_x: float, frame_idx: int, drawn_labels: list):
-        """Draws vehicle with metallic paint, alloy wheels, soft contact shadow, and non-overlapping label."""
+        """Draws vehicle with metallic paint, alloy wheels, soft contact shadow, and clamped frosted pill."""
         hw, hl = v.width * 0.5, v.length * 0.5
         h = v.height
         x, z = v.x, v.z
@@ -349,30 +348,36 @@ class DigitalTwin3DRenderer:
         for wx, wy in (pts[0], pts[1]):
             pygame.draw.circle(surface, (12, 12, 12), (wx, wy), 4)
             pygame.draw.circle(surface, (160, 175, 195), (wx, wy), 2, 1)
-            pygame.draw.circle(surface, (215, 35, 38), (wx, wy), 1) # Brake Caliper
+            pygame.draw.circle(surface, (215, 35, 38), (wx, wy), 1)
 
         # LED Taillights
         tl_col = (255, 35, 35) if v.is_braking else (205, 20, 20)
         pygame.draw.circle(surface, tl_col, (pts[0][0] + 4, pts[0][1] - 6), 3)
         pygame.draw.circle(surface, tl_col, (pts[1][0] - 4, pts[1][1] - 6), 3)
 
-        # Smart Non-Overlapping Tag Placement with Apple-Tesla Frosted Pill
+        # Viewport-Clamped Smart Frosted Pill Tag
+        lbl_text = f"{v.id} [{v.speed_kmh:.0f} km/h]"
+        lbl_surf = pygame.font.SysFont("consolas", 10, bold=True).render(lbl_text, True, (215, 235, 255))
+        pill_w = lbl_surf.get_width() + 10
+        pill_h = 16
+
         u_top = (pts[4][0] + pts[5][0]) // 2
+        # Clamp u_top so the pill stays completely inside the 3D center panel bounds
+        u_top = max(pill_w // 2 + 6, min(self.w - pill_w // 2 - 6, u_top))
         v_top = min(pts[4][1], pts[5][1]) - 14
 
         for prev_u, prev_v in drawn_labels:
-            if abs(u_top - prev_u) < 75 and abs(v_top - prev_v) < 16:
+            if abs(u_top - prev_u) < 80 and abs(v_top - prev_v) < 16:
                 v_top = prev_v - 16
 
         drawn_labels.append((u_top, v_top))
-        lbl_text = f"{v.id} [{v.speed_kmh:.0f} km/h]"
-        lbl_surf = pygame.font.SysFont("consolas", 10, bold=True).render(lbl_text, True, (215, 235, 255))
-        pill_rect = pygame.Rect(u_top - lbl_surf.get_width() // 2 - 4, v_top - 2, lbl_surf.get_width() + 8, 14)
+
+        pill_rect = pygame.Rect(u_top - pill_w // 2, v_top - 2, pill_w, pill_h)
         pill_surf = pygame.Surface((pill_rect.width, pill_rect.height), pygame.SRCALPHA)
-        pygame.draw.rect(pill_surf, (10, 14, 22, 180), (0, 0, pill_rect.width, pill_rect.height), border_radius=3)
-        pygame.draw.rect(pill_surf, (35, 45, 65, 220), (0, 0, pill_rect.width, pill_rect.height), 1, border_radius=3)
+        pygame.draw.rect(pill_surf, (10, 14, 22, 200), (0, 0, pill_rect.width, pill_rect.height), border_radius=4)
+        pygame.draw.rect(pill_surf, (40, 52, 75, 230), (0, 0, pill_rect.width, pill_rect.height), 1, border_radius=4)
         surface.blit(pill_surf, (pill_rect.x, pill_rect.y))
-        surface.blit(lbl_surf, (u_top - lbl_surf.get_width() // 2, v_top - 1))
+        surface.blit(lbl_surf, (u_top - lbl_surf.get_width() // 2, v_top))
 
     def draw_3d_ego_vehicle(self, surface: pygame.Surface, ego: EgoAutonomousVehicle, frame_idx: int):
         """Draws hero Tesla Model S with Deep Metallic Blue body and panoramic glass."""

@@ -4,8 +4,8 @@ multi_cam_simulator.py — Apple-Tesla Level 4 Surround Camera Simulator
 Features:
   - 4 Synchronized Surround Feeds: FRONT (Top), LEFT (Left Flank), RIGHT (Right Flank), REAR (Bottom Mirror).
   - Accurate 3-Lane Perspective Highway Geometry with Dynamic Ego Lateral Position (ego_x).
-  - ASCII-Safe Crisp Typography (Zero '???' encoding artifacts).
-  - Smart Dynamic Label Staggering to Eliminate Vehicle Text Overlap.
+  - Protected Optical Telemetry Zone (LiDAR points never obscure bottom text).
+  - Boundary-Clamped Vehicle Bounding Boxes & Tags (Zero edge truncation).
   - Photorealistic Asphalt Micro-Texture, Specular Highlights & Mountain Silhouettes.
 """
 
@@ -62,11 +62,13 @@ class MultiCameraSimulator:
                 night_mode=night_mode
             )
 
-            # Project 3D LiDAR point cloud returns onto camera image
+            # Project 3D LiDAR point cloud returns onto camera image (Protected Telemetry Zone)
             if render_lidar_on_cams and lidar_engine is not None and point_cloud is not None:
                 pts_2d = lidar_engine.project_points_to_camera(point_cloud, cam_id, self.w, self.h)
                 for u, v, color, _ in pts_2d:
-                    cv2.circle(cams[cam_id], (u, v), 1, color, -1)
+                    # Clip points so they never obscure the bottom telemetry bar or top indicator
+                    if 18 < v < self.h - 18 and 2 < u < self.w - 2:
+                        cv2.circle(cams[cam_id], (u, v), 1, color, -1)
 
         return cams
 
@@ -113,7 +115,6 @@ class MultiCameraSimulator:
         # 2. MOUNTAIN SILHOUETTES AT HORIZON
         # -------------------------------------------------------------
         if weather_mode != "FOG":
-            # Layer 1 (Far): RGB(14, 20, 32)
             pts_m1 = [(0, horizon_y)]
             for x in range(0, self.w + 4, 4):
                 my = int(horizon_y - 10 - 5.5 * math.sin(x * 0.022 + (1.0 if cam_id == "REAR" else 0.0)))
@@ -121,7 +122,6 @@ class MultiCameraSimulator:
             pts_m1.append((self.w, horizon_y))
             cv2.fillPoly(frame, [np.array(pts_m1, dtype=np.int32)], (14, 20, 32))
 
-            # Layer 2 (Near): RGB(20, 28, 42)
             pts_m2 = [(0, horizon_y)]
             for x in range(0, self.w + 4, 4):
                 my = int(horizon_y - 4 - 3.5 * math.sin(x * 0.045 + 1.2))
@@ -156,8 +156,8 @@ class MultiCameraSimulator:
         # 4. ACCURATE 3-LANE PERSPECTIVE PROJECTION
         # -------------------------------------------------------------
         t_motion = (frame_idx * (speed_kmh * 0.08)) % 8.0
-        yellow_divider = (255, 200, 30) # Solid Yellow Left Line (RGB)
-        white_line = (230, 235, 245)     # Dashed/Solid White Lines (RGB)
+        yellow_divider = (255, 200, 30)
+        white_line = (230, 235, 245)
 
         if cam_id in ("FRONT", "REAR"):
             sign_dir = 1.0 if cam_id == "FRONT" else -1.0
@@ -185,7 +185,7 @@ class MultiCameraSimulator:
             if len(line_pts_right) > 1:
                 cv2.polylines(frame, [np.array(line_pts_right, dtype=np.int32)], False, white_line, 2, cv2.LINE_AA)
 
-            # Dashed Lane Dividers (X = -1.875m and X = +1.875m) -> 3 DISTINCT LANES
+            # Dashed Lane Dividers (X = -1.875m and X = +1.875m)
             for lane_x in (-1.875, 1.875):
                 for z_dash in np.arange(2.0 + t_motion, 50.0, 7.5):
                     rel_x = (lane_x - ego_x) * sign_dir
@@ -211,9 +211,8 @@ class MultiCameraSimulator:
             cv2.line(frame, (u_edge, horizon_y + 20), (self.w, horizon_y + 20), (90, 105, 125), 2)
 
         # -------------------------------------------------------------
-        # 5. DYNAMIC VEHICLES (RGB Consistent & Non-Overlapping Labels)
+        # 5. DYNAMIC VEHICLES (RGB Consistent & Boundary Clamped)
         # -------------------------------------------------------------
-        # Sort objects by distance so far objects are drawn first
         visible_vehicles = []
         for obj in dynamic_objects:
             ox, oz, ow, ol, label, col_rgb = obj
@@ -243,7 +242,6 @@ class MultiCameraSimulator:
 
         visible_vehicles.sort(key=lambda item: item[0], reverse=True)
 
-        # Draw vehicles with smart label collision avoidance
         drawn_labels = []
         for cam_z, u, v, bw, bh, label, col_rgb in visible_vehicles:
             veh_rgb = col_rgb if col_rgb else (218, 35, 38)
@@ -274,16 +272,19 @@ class MultiCameraSimulator:
             # Bounding Bracket
             cv2.rectangle(frame, (u - bw//2 - 2, v - bh - 2), (u + bw//2 + 2, v + 2), (0, 212, 255), 1)
 
-            # Smart Tag Offset to avoid overlapping labels
+            # Boundary-Clamped Smart Tag
+            tag_str = f"{label} [{cam_z:.1f}m]"
+            tag_w = len(tag_str) * 6 + 6
+            tag_x = max(6, min(self.w - tag_w - 6, u - bw // 2))
             tag_y = v - bh - 4
-            for prev_u, prev_y in drawn_labels:
-                if abs(u - prev_u) < 65 and abs(tag_y - prev_y) < 12:
+
+            for prev_x, prev_y in drawn_labels:
+                if abs(tag_x - prev_x) < 70 and abs(tag_y - prev_y) < 12:
                     tag_y = prev_y - 12
 
-            drawn_labels.append((u, tag_y))
-            tag_str = f"{label} [{cam_z:.1f}m]"
-            cv2.putText(frame, tag_str, (u - bw//2, tag_y),
-                        cv2.FONT_HERSHEY_DUPLEX, 0.26, (0, 212, 255), 1, cv2.LINE_AA)
+            drawn_labels.append((tag_x, tag_y))
+            cv2.putText(frame, tag_str, (tag_x, tag_y),
+                        cv2.FONT_HERSHEY_DUPLEX, 0.25, (0, 212, 255), 1, cv2.LINE_AA)
 
         # -------------------------------------------------------------
         # 6. RAIN / FOG ATMOSPHERIC LAYERS
@@ -316,13 +317,12 @@ class MultiCameraSimulator:
         cv2.rectangle(frame, (4, 4), (4 + pill_w, 18), (35, 44, 60), 1)
         cv2.putText(frame, tag_text, (8, 14), cv2.FONT_HERSHEY_DUPLEX, 0.26, (190, 215, 240), 1, cv2.LINE_AA)
 
-        # Blinking REC Indicator
         if frame_idx % 60 < 30:
-            cv2.circle(frame, (self.w - 12, 11), 3, (255, 59, 48), -1) # Tesla Red
+            cv2.circle(frame, (self.w - 12, 11), 3, (255, 59, 48), -1)
             cv2.putText(frame, "REC", (self.w - 36, 14), cv2.FONT_HERSHEY_DUPLEX, 0.25, (255, 59, 48), 1, cv2.LINE_AA)
 
-        # Clean ASCII Optics Telemetry (Zero '???')
+        # Protected Telemetry Bar at Bottom
         cv2.putText(frame, "f/1.8 | 1/500s | ISO 400", (8, self.h - 6),
-                    cv2.FONT_HERSHEY_DUPLEX, 0.25, (120, 135, 155), 1, cv2.LINE_AA)
+                    cv2.FONT_HERSHEY_DUPLEX, 0.25, (135, 148, 168), 1, cv2.LINE_AA)
 
         return frame
